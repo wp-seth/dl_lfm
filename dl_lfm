@@ -1,0 +1,1138 @@
+#!/usr/bin/perl
+# author:  seth
+# description: downloads last.fm user data and scrobbles streams to last.fm
+#
+# tab-size: 2
+
+use strict;
+use warnings;
+use Data::Dumper;
+use Getopt::Long qw(:config bundling);
+use Pod::Usage;
+use POSIX qw/strftime/;       # format timestamp
+
+$main::VERSION = '0.3';
+binmode STDOUT, ":utf8";
+
+# functions
+# =========
+# sub syntaxCheck
+#		check input of user
+#
+
+sub syntaxCheck{
+	my %params = ( # default cli params
+		'dl'            => 0,     # download user data
+		'password'      => undef, # password
+		'password-file' => "$ENV{'HOME'}/.password_lastfm", # file containing password
+		'scrobble'      => undef, # file or radio station to scrobble
+		'stream-out'    => '| vlc -', # the destination for streaming data
+		'user'          => undef, # user-name
+		'verbose'       => 1,     # trace; grade of verbosity
+		'version'       => 0,     # diplay version and exit
+	);
+	GetOptions(\%params,
+		"dl",
+		"password=s",
+		"password-file=s",
+		"scrobble|s=s",
+		"stream-out=s",
+		"user|u=s",
+		"silent|quiet|q" => sub { $params{'verbose'} = 0;},
+		"very-verbose" => sub { $params{'verbose'} = 2;},
+		"verbose|v:+",
+		# auto_version will not auto make use of 'V'
+		"version|V" => sub { Getopt::Long::VersionMessage();}, 
+		# auto_help will not auto make use of 'h'
+		"help|?|h" => sub { Getopt::Long::HelpMessage(
+				-verbose=>99, -sections=>"NAME|SYNOPSIS");}, 
+		"man" => sub { pod2usage(-exitval=>0, -verbose=>2);},
+	) or pod2usage(-exitval=>2);
+	$params{'verbose'} = 1 unless exists $params{'verbose'};
+	# additional params
+	my @additional_params = (0,0); # number of additional params (min, max);
+	if(@ARGV < $additional_params[0] 
+			or ($additional_params[1] != -1 and @ARGV > $additional_params[1])){
+		if($additional_params[0] == $additional_params[1]){
+			print "number of arguments must be exactly $additional_params[0], but is " 
+				. (0 + @ARGV) . ".\n";
+		}else{
+			print "number of arguments must be at least $additional_params[0]"
+				. ' and at most ' 
+				. ($additional_params[1] == -1 ? 'inf' : $additional_params[1]) 
+				. ", but is " . (0 + @ARGV) . ".\n";
+		}
+		pod2usage(-exitval => 2);
+	}
+	return \%params;
+}
+
+{
+	package Lastfm_dl;
+	use Data::Dumper;
+	use Encode;
+	use IO::Socket::INET;
+	use JSON;
+	use LWP::UserAgent;         # fast, small web browser
+	use Digest::MD5 qw(md5_hex);
+	use POSIX qw/strftime/;     # format timestamp
+	use URI::Escape;
+	use YAML;
+	use Term::ReadKey;          # used for user input
+
+	sub new{
+		my $class = shift;
+		my $params = shift;
+		my $self = bless {
+			'api_key'       => '33068e0258f716d75a8265da4c71d2b2',
+			'lastfm_root'   => 'https://ws.audioscrobbler.com/2.0/',
+			'password'      => $params->{'password'},
+			'password_file' => $params->{'password-file'},
+			'shared_secret' => '4972ac93a09ce39fae4f7bf88adcaf91',
+			'session_key'   => undef,
+			'stream_out'    => $params->{'stream-out'},
+			'socket'        => undef,
+			'token'         => undef,
+			'username'      => $params->{'username'},
+			'verbose'       => $params->{'verbose'},
+			'lastfm_methods' => {
+				'auth.getmobilesession' => {
+					'required' => ['password', 'username', 'api_key', 'api_sig'],
+					'optional' => [],
+				},
+				'auth.getsession' => {
+					'required' => ['token', 'api_key', 'api_sig'],
+					'optional' => [],
+				},
+				'auth.gettoken' => {
+					'required' => ['api_key', 'api_sig'],
+					'optional' => [],
+				},
+				'track.scrobble' => {
+					'required' => ['artist', 'track', 'timestamp', 'api_key', 'api_sig', 
+						'sk'],
+					'optional' => ['album', 'context', 'streamId', 'chosenByUser', 
+						'trackNumber', 'mbid', 'albumArtist', 'duration'],
+				},
+				'track.updatenowplaying' => {
+					'required' => ['artist', 'track', 'api_key', 'api_sig', 'sk'],
+					'optional' => ['album', 'context', 'trackNumber', 'mbid', 'albumArtist', 
+						'duration'],
+				},
+				'user.getartisttracks' => {
+					'required' => ['user', 'artist', 'api_key'],
+					'optional' => ['startTimestamp', 'page', 'endTimestamp'],
+				},
+				'user.getfriends' => {
+					'required' => ['user', 'api_key'],
+					'optional' => ['recenttracks', 'limit', 'page'],
+				}, 
+				'user.getinfo' => {
+					'required' => ['user', 'api_key'],
+					'optional' => [],
+				}, 
+				'user.getlovedtracks' => {
+					'required' => ['user', 'api_key'],
+					'optional' => ['limit', 'page'],
+				},
+				'user.getpersonaltags' => {
+					'required' => ['user', 'tag', 'taggingtype', 'api_key'],
+					'optional' => ['limit', 'page'],
+				},
+				'user.getrecenttracks' => {
+					'required' => ['user', 'api_key'],
+					'optional' => ['limit', 'page', 'from', 'extended', 'to'],
+				},
+				'user.gettopalbums' => {
+					'required' => ['user', 'api_key'],
+					'optional' => ['period', 'limit', 'page'],
+				},
+				'user.gettopartists' => {
+					'required' => ['user', 'api_key'],
+					'optional' => ['period', 'limit', 'page'],
+				},
+				'user.gettoptags' => {
+					'required' => ['user', 'api_key'],
+					'optional' => ['limit'],
+				},
+				'user.gettoptracks' => {
+					'required' => ['user', 'api_key'],
+					'optional' => ['period', 'limit', 'page'],
+				},
+				'user.getweeklyalbumchart' => {
+					'required' => ['user', 'api_key'],
+					'optional' => ['from', 'to'],
+				},
+				'user.getweeklyartistchart' => {
+					'required' => ['user', 'api_key'],
+					'optional' => ['from', 'to'],
+				},
+				'user.getweeklychartlist' => {
+					'required' => ['user', 'api_key'],
+					'optional' => [],
+				},
+				'user.getweeklytrackchart' => {
+					'required' => ['user', 'api_key'],
+					'optional' => ['from', 'to'],
+				},
+			},
+		}, $class;
+		return $self;
+	}
+
+	sub authenticate{
+		my $self = shift;
+		$self->get_token unless defined $self->{'token'};
+		my $auth_url = 'https://www.last.fm/api/auth/?api_key=' . $self->{'api_key'} 
+			. '&token=' . $self->{'token'};
+		my ($http_code, $response) = $self->get_http_content($auth_url);
+		return 1;
+	}
+
+	sub bandcamp_collect_trackinfos{
+		my $self = shift;
+		my $url = shift;
+		$self->msg(1, 'reading bandcamp album page');
+		my ($http_status, $content) = $self->get_http_content($url);
+		my $last_fm_struct = [];
+		if($content =~ /\nvar TralbumData = ({\s*\n(?:\s+.*\n)+});/){
+			$content = $1;
+			$content =~ s/(?<=\n)[ \t]*\/\/.*\n//g;
+			$content =~ s/(?<=,)[ \t]*\/\/.*//g;
+			$content =~ s/^\s++([^:]+): /"$1": /mg;
+			$content =~ s/" \+ "//g;
+			$content = JSON::from_json($content);
+			my $album_title = $content->{'current'}{'title'} or
+				$self->msg(0, 'could not find album title', 'error');
+			my $artist = $content->{'artist'} or
+				$self->msg(0, 'could not find artist', 'error');
+			my $trackinfos = $content->{'trackinfo'} or
+				$self->msg(0, 'could not find trackinfos', 'error');
+			if(defined $trackinfos){
+				# set timestamp to now - album_length
+				my $timestamp = time; # now
+				for my $t(@$trackinfos){
+					$timestamp -= $t->{'duration'};
+				}
+				for my $t(@$trackinfos){
+					push @$last_fm_struct, {
+						'artist' => $artist,
+						'track' => $t->{'title'},
+						'timestamp' => int($timestamp + .5), 
+						'album' => $album_title,
+						'chosenByUser' => '1',
+						'trackNumber' => $t->{'track_num'},
+						'duration' => $t->{'duration'},
+					};
+					$timestamp += $t->{'duration'};
+				}
+			}else{
+				$self->msg(0, 'could not find trackinfos', 'error');
+			}
+		}else{
+			$self->msg(0, 'could not find album data', 'error');
+		}
+		return $last_fm_struct;
+	}
+
+	sub stream_connect{
+		my $self = shift;
+		my $url = shift;
+		my $socket;
+		my $icy_metaint;
+		if($url =~ /https?:\/\/([^:\/]*)(?:\:(\d+))?(?:\/(.*))?/){
+			my $host = $1;
+			my $port = $2 // 80;
+			my $file = '/' . $3;
+			$self->msg(1, "connecting to $host:$port");
+			$socket = IO::Socket::INET->new(
+				PeerHost => $host,
+				PeerPort => $port,
+				Proto => 'tcp',
+			);
+			if($socket){
+				$self->{'socket'} = $socket;
+				$self->msg(1, "requesting '$file'");
+				my $send_header = 
+					"GET $file HTTP/1.0\n" .
+					"Icy-MetaData:1\n\n" .
+					"Accept: */*\n" .
+					"User-Agent: dl_lfm v$::VERSION\n\n";
+				$self->msg(2, "sending header: $send_header");
+				$socket->send($send_header);
+				$self->msg(1, "waiting for reply");
+				my $header = <$socket>;
+				$self->msg(1, $header);
+				unless($header =~ /200|OK/){
+					$self->msg(0, 'reading of stream header failed', 'error');
+					exit 1;
+				}
+				while($header = <$socket>){
+					if($header =~ /^icy-metaint:([0-9]+)/){
+						$icy_metaint = $1;
+					}
+					chomp($header);
+					$self->msg(2, "header: $header");
+					last unless $header =~ /\S/;
+				}
+				defined $icy_metaint or $self->msg(0, 'no icy meta intervall found', 
+					'warning');
+			}else{
+				$self->msg(1, "socket creation failed: $!", 'notice');
+			}
+		}else{
+			$self->msg(2, "could not read url", 'notice');
+		}
+		return ($socket, $icy_metaint);
+	}
+
+	sub stream_parse_icy_info{
+		my $self = shift;
+		my $str  = shift;
+		if($str =~ /^StreamTitle='(?:NEXT: ?)?(.*) - (.*)';StreamUrl='';/){
+			return {
+				'artist' => $1,
+				'track'  => $2,
+			}
+		}else{
+			return $str;
+		}
+	}
+
+	sub stream_read_current_track{
+		my $self        = shift;
+		my $icy_metaint = shift;
+		# out file or stream, e.g. '>test.mp3' or '| vlc -'
+		my $outstream   = $self->{'stream_out'} // '| vlc -'; 
+		my $content; 
+		my $byte_count = 0; 
+		my $byte_inc_default = 1024; 
+		my $byte_inc = (defined($icy_metaint) && $byte_inc_default >= $icy_metaint)
+			? $icy_metaint : $byte_inc_default; 
+		my $info = '';
+		open(HANDLER, $outstream) 
+			or die "error: cannot pipe input to '" . substr($outstream, 1) . "': $!\n";
+		$self->msg(1, "redirecting HTTP filestream to '$outstream'");
+		my %last_track = ('artist' => '', 'track' => '');
+		my $socket = $self->{'socket'};
+		$SIG{'CHLD'} = 'IGNORE'; # avoid creating zombies with fork
+		my $state = 'scrobble';
+		ReadMode('cbreak') if defined &ReadMode;
+		while($socket->read($content, $byte_inc)){
+			#printf "read %d, %d\n", length($content), $byte_inc;
+			my $key = ReadKey(-1) if defined &ReadKey;
+			if(defined $key){
+				if($key eq 'i'){
+					$self->scrobble_forked(\%last_track);
+					$state = 'skip';
+				}elsif($key eq 'n'){
+					$self->msg(1, 'no scrobbling from now on.');
+					$state = 'no scrobble';
+				}elsif($key eq 'k'){
+					$self->msg(1, 'skip scrobbling of current track');
+					$state = 'skip';
+				}elsif($key eq 's'){
+					$self->msg(1, 'scrobbling from now on.');
+					$state = 'scrobble';
+				}else{
+					$self->msg(1, 'i - immediately scrobble current track');
+					$self->msg(1, 'n - no scrobbling');
+					$self->msg(1, 'k - skip scrobbling for current track');
+					$self->msg(1, 's - scrobbling');
+				}
+			}
+			print HANDLER $content;
+			if(defined $icy_metaint){
+				$byte_count += $byte_inc;
+				if($byte_count == $icy_metaint){
+					$socket->read($content, 1);
+					my $length = 16 * ord($content);
+					if($length > 0){
+						$socket->read($content, $length);
+						$content =~ s/\s+$//;
+						$self->msg(4, $content);
+						if($content ne $info){
+							$info = $content;
+							if($info =~ /\S/){
+								my $current_track = $self->stream_parse_icy_info($info);
+								if(ref $current_track eq 'HASH'){
+									if($last_track{'artist'} ne $current_track->{'artist'} ||
+										$last_track{'track'} ne $current_track->{'track'}){
+										if($state eq 'scrobble'){
+											$self->scrobble_forked(\%last_track);
+										}else{
+											$self->msg(2, 'skip scrobbling');
+											$state = 'scrobble' if $state eq 'skip';
+										}
+										$self->msg(2, "playing: '$current_track->{'artist'}' "
+											. "-- '$current_track->{'track'}'");
+										$self->update_now_playing_forked($current_track);
+										$last_track{'artist'} = $current_track->{'artist'};
+										$last_track{'track'} = $current_track->{'track'};
+									}else{
+										$self->msg(2, "still playing '$current_track->{'artist'}' "
+											. "-- '$current_track->{'track'}'");
+										$self->update_now_playing_forked($current_track);
+									}
+								}else{
+									$self->msg(1, $current_track);
+								}
+							}
+						}
+					}
+					$byte_count = 0;
+					$byte_inc = $byte_inc_default < $icy_metaint ? $byte_inc_default
+						: $icy_metaint;
+				}elsif($byte_count + $byte_inc > $icy_metaint){
+					$byte_inc = $icy_metaint - $byte_count;
+				}
+			}
+		}
+		ReadMode('restore') if defined &ReadMode;
+		close HANDLER;
+		$socket->close;
+	}
+
+	sub get_all_user_data{
+		my $self = shift;
+		my $user = shift;
+		for my $method(
+			# last.fm supported methods:
+			'user.getrecenttracks',
+			# self-made methods:
+			'user.getpastevents',
+		){
+			my $filename = "${user}_${method}.json";
+			if(-e $filename){
+				$self->msg(1, "'$filename' exists already and will not be overwritten " 
+					. "but read instead.");
+				$self->{'method'}{$method} = $self->load_json_file($filename);
+			}else{
+				if($method eq 'user.getpastevents'){
+					$self->{'method'}{$method} = $self->get_user_past_events($user);
+				}elsif(grep {$method eq $_} keys %{$self->{lastfm_methods}}){
+					$self->{'method'}{$method} = $self->get_lastfm({
+							'method' => $method,
+							'user' => $user,
+						}, 0
+					);
+				}else{
+					$self->msg(0, 'unsupported method', 'error');
+				}
+				if(defined $self->{'method'}{$method}){
+					$self->save_json_file($filename, $self->{'method'}{$method});
+				}else{
+					$self->msg(1, "could not fetch data for method '$method'.", 'warning');
+				}
+			}
+		}
+		return 1;
+	}
+
+	sub get_http_content{
+		my $self = shift;
+		my $url  = shift;
+		my $http_method = shift // 'GET';
+		my $more = shift;
+		$self->msg(2, "getting '$url'");
+		my $lwp = LWP::UserAgent->new(
+			'keep_alive' => 1, 
+			'timeout'    => 10, 
+			'agent'      => 'dl_lfm v' . $::VERSION,
+		);
+		my $response = $http_method eq 'GET' ? $lwp->get($url, %$more)
+			: $lwp->post($url, %$more);
+		unless($response->is_success){
+			$self->msg(0, $response->status_line, 'error');
+		}
+		my $content = $response->decoded_content;
+		$self->msg(2, "status = " . $response->code);
+		return ($response->code, $content);
+	}
+
+	sub get_lastfm{
+		my $self  = shift;
+		my $query = shift;
+		my $sign  = shift // 0;
+		my $http_method = shift // 'GET';
+		my %query_ext = (%$query, 'format' => 'json', 'api_key' => $self->{'api_key'});
+		my $optional_params = $self->{'lastfm_methods'}{$query->{'method'}}{'optional'};
+		if(grep {'limit' eq $_} @$optional_params){
+			$self->msg(5, 'setting limit to 1000');
+			$query_ext{'limit'} = 1000;
+		}
+		if(grep {'page' eq $_} @$optional_params){
+			$self->msg(5, 'setting page to 1');
+			$query_ext{'page'} = 1;
+		}
+		if(grep {'extended' eq $_} @$optional_params){
+			$self->msg(5, 'setting extended to 1');
+			$query_ext{'extended'} = 1;
+		}
+		my $finished = 0;
+		my $json;
+		while(!$finished){
+			my $url = $self->{'lastfm_root'};
+			my $sig_str = '';
+			my $sep = '?';
+			for my $key(sort keys %query_ext){
+				unless($key =~ /^(?:callback|format|page|limit|extended)$/){
+					$sig_str .= $key . $query_ext{$key};
+				}
+				$query_ext{$key} = uri_escape_utf8($query_ext{$key});
+				$url .= $sep . $key . '=' . $query_ext{$key};
+				$sep = '&' if $sep eq '?';
+			}
+			if($sign){
+				$sig_str .= $self->{'shared_secret'};
+				$self->msg(3, "signature: '$sig_str'");
+				$query_ext{'api_sig'} = md5_hex(encode('utf8', $sig_str));
+				$url .= $sep . 'api_sig=' . $query_ext{'api_sig'};
+			}
+			my ($status, $content);
+			if($http_method eq 'GET'){
+				($status, $content) = $self->get_http_content($url, $http_method);
+			}elsif($http_method eq 'POST'){
+				($status, $content) = $self->get_http_content($url, $http_method, 
+					\%query_ext);
+			}else{
+				$self->msg(0, 'wrong http method?', 'error');
+				die;
+			}
+			my $json_page = JSON::from_json($content);
+			if(defined $json_page->{'error'}){
+				$self->msg(0, Dumper($json_page), 'error');
+				$json_page = {};
+			}
+			if(defined $query_ext{'page'}){
+				my $main_key = (keys %$json_page)[0];
+				$self->msg(4, "main key = '$main_key'");
+				if(defined $json_page->{$main_key}{'@attr'}){
+					my $total_pages = $json_page->{$main_key}{'@attr'}{'totalPages'};
+					if($query_ext{'page'} >= $total_pages){
+						$finished = 1;
+					}else{
+						$self->msg(1, "got $query_ext{'page'} of $total_pages pages");
+						++$query_ext{'page'};
+					}
+					delete $json_page->{$main_key}{'@attr'};
+				}else{
+					$self->msg(3, 'could not find \'@attrs\', so probably reached end');
+					$finished = 1;
+				}
+				if($query_ext{'page'} == 1){
+					$json = $json_page;
+				}else{
+					my $main_subkey = (
+						grep {$_ ne '@attr'} keys %{$json_page->{$main_key}}
+					)[0];
+					$self->msg(4, "main sub key = '$main_subkey'");
+					push @{$json->{$main_key}{$main_subkey}}, 
+						@{$json_page->{$main_key}{$main_subkey}};
+				}
+			}else{
+				$json = $json_page;
+				$finished = 1;
+			}
+		}
+		return $json;
+	}
+
+	sub get_mobile_session{
+		my $self = shift;
+		unless(defined $self->{'token'}){
+			if(!$self->get_token(1)){
+				$self->msg(0, 'could not get a token', 'error');
+				die;
+			}
+		}
+		# credentials
+		# if user name is not defined, let user type in wiki user name
+		if(not defined $self->{'username'}){
+			$self->msg(1, "enter last.fm username:");
+			$self->{'username'} = <STDIN>;
+			chomp($self->{'username'});
+		}
+		$self->msg(2, "last.fm login user name is '$self->{'username'}'.");
+		# if user password is not defined, search typical password places or let 
+		# user type in user password
+		if(not defined $self->{'password'}){
+			my $pwfile = [$self->{'password_file'}];
+			for(@$pwfile){
+				if(-e $_){
+					$self->msg(1, "using password file '$_'");
+					open(my $INFILE, '<', $_) or die $!;
+						chomp($self->{'password'} = <$INFILE>);
+					close($INFILE);
+					last;
+				}
+			}
+			unless(defined $self->{'password'}){
+				if($self->{'verbose'} >= 1){
+					$self->msg(1, 'could not read password file at places: ');
+					print '  ' . $pwfile->[$_] . ', ' for 0..($#$pwfile-1);
+					print $pwfile->[-1] . "\n";
+				}
+				$self->msg(0, "enter password (will not be echoed):");
+				ReadMode('raw') if defined &ReadMode;
+				$self->{'password'} = ReadLine(0) if defined &ReadLine;
+				chomp($self->{'password'});
+				ReadMode('restore') if defined &ReadMode;
+				while($self->{'password'} =~ /\x{007f}/){
+					$self->{'password'} =~ s/(?:^|[^\x{007f}])\x{007f}//g;
+				}
+			}
+		}
+		if(defined $self->{'username'} and defined $self->{'password'}){
+			# login
+			my $json = $self->get_lastfm({
+					'username' => $self->{'username'},
+					'password' => $self->{'password'},
+					'method'   => 'auth.getMobileSession',
+					'token'    => $self->{token},
+				}, 1, 'POST'
+			);
+			$self->{'session_key'} = $json->{'session'}{'key'};
+		}else{
+			$self->msg(0, 'could not login; missing username or password', 'error')
+		}
+		$self->{'token'} = undef unless defined $self->{'session_key'};
+		return $self->{'session_key'};
+	}
+
+	sub get_time_iso{
+		my $self = shift;
+		my $unixtimestamp = shift // time();
+		return strftime("%Y-%m-%d%H:%M:%S", gmtime($unixtimestamp));
+	}
+
+	sub get_time_iso_{
+		my $self = shift;
+		my $unixtimestamp = shift // time();
+		return strftime("%Y-%m-%d %H:%M:%S", gmtime($unixtimestamp));
+	}
+
+	sub get_token{
+		my $self   = shift;
+		my $signed = shift // 0;
+		my $json = $self->get_lastfm({
+				'method' => 'auth.gettoken',
+			}, $signed
+		);
+		$self->{'token'} = $json->{'token'};
+		return $json->{'token'};
+	}
+
+	sub get_session{
+		my $self = shift;
+		$self->get_token(0) unless defined $self->{'token'};
+		my $json = $self->get_lastfm({
+				'method' => 'auth.getSession',
+				'token' => $self->{'token'},
+			}, 1
+		);
+		return $json->{'session'};
+	}
+
+	sub get_user_info{
+		my $self = shift;
+		my $user = shift;
+		my $json = $self->get_lastfm({
+				'method' => 'user.getinfo',
+				'user' => $user,
+			}, 0
+		);
+		return $json;
+	}
+
+	sub get_user_past_events{
+		my $self = shift;
+		my $user = shift;
+		#my $json = $self->get_lastfm({
+		#		'method' => 'user.getpastevents',
+		#		'user' => $user,
+		#	}, 0
+		#);
+		# get event overview page
+		my $website = "http://www.last.fm";
+		my $init_path = "/user/$user/events/";
+		my $content = $self->get_http_content($website . $init_path);
+		my @paths = ($content =~ /"(\Q$init_path\E[0-9]+)"/g);
+		my $events;
+		# get events per year
+		for my $path(@paths){
+			$content = $self->get_http_content($website . $path);
+			# extract event tables
+			$content =~ s/^.*<section id="events-section">(.+?)<\/section>.*$/$1/;
+			$content =~ s/&amp;/&/g;
+			# collect table heads and rows
+			my @parts = $content =~ /
+				<table\s+class="events-list">\s*
+				<thead\s+class="sr-only">\s*
+				<tr\b[^>]*>\s*((?:<th\b[^>]*>[^<]+<\/th>\s*)+)<\/tr>\s*<\/thead>\s*
+				<tbody\b[^>]*>\s*
+				(?:<tr\b[^>]*>\s*+(.*?)<\/tr>\s*+)+
+				<\/tbody>\s*<\/table>
+			/xgs;
+			my @table_head;
+			$self->msg(4, 'walk through table heads and rows');
+			for my $part(@parts){
+				if(substr($part, 1, 2) eq 'th'){
+					$self->msg(4, 'found table head');
+					@table_head = $part =~ /<th>\s*(.*\S)\s*<\/th>/g;
+				}elsif(substr($part, 1, 2) eq 'td'){
+					$self->msg(4, 'found table row');
+					my @table_row = $part =~ /<td\b[^>]*>\s*(.*?)<\/td>/gs;
+					if(scalar(@table_row) == scalar(@table_head)){
+						$self->msg(4, 'collect event data');
+						my $event; 
+						for(my $i = 0; $i < @table_head; ++$i){
+							if($table_row[$i] =~ /<time datetime="([^"]+)"[^>]*>/){
+								$self->msg(4, 'got event timestamp');
+								$event->{$table_head[$i]} = $1;
+							}elsif($table_row[$i] =~ /
+								<a\s+href="([^"]+)"[^>]*>\s*+
+								([^<]*\S)\s*
+								<\/a>.*
+								<div\s+class="[^"]+\blineup">\s*([^<]*)\s*<\/div>
+							/xs){
+								$self->msg(4, 'got event name and lineup');
+								$event->{$table_head[$i]}{'url'} = $website . $1;
+								$event->{$table_head[$i]}{'name'} = $2;
+								$event->{$table_head[$i]}{'lineup'} = $3;
+								$event->{$table_head[$i]}{'lineup'} =~ s/\s+$//g;
+								$event->{$table_head[$i]}{'lineup'} = [split /,\s*/, 
+									$event->{$table_head[$i]}{'lineup'}];
+							}elsif($table_row[$i] =~ /
+								<div\s+class="[^"]+\bvenue--title">\s*([^<]*\S)\s*<\/div>
+							/xs){
+								$self->msg(4, 'got event name and venue');
+								$event->{$table_head[$i]}{'title'} = $1;
+								if($table_row[$i] =~ /
+									<div\s+class="[^"]+\bvenue--address">\s*(.*)
+								/xs){
+									my $address = $1;
+									while($address =~ /
+										<div\s+class="[^"]+\bvenue--([^"]+)">\s*([^<]*\S)\s*<\/div>
+										/gxs){
+										$event->{$table_head[$i]}{$1} = $2;
+									}
+								}
+							}elsif($table_row[$i] =~ /^\s*$/xs){
+								# attendees are not interesting
+							}else{
+								$self->msg(0, 'could not parse events', 'error');
+								$self->msg(1, $table_row[$i], 'error');
+							}
+						}
+						push @$events, $event;
+					}else{
+						$self->msg(0, 'could not read page', 'error');
+					}
+				}else{
+					$self->msg(0, 'could not read page', 'error');
+				}
+			}
+		}
+		return $events;
+	}
+
+	sub load_json_file{
+		my $self = shift;
+		my $file = shift;
+		my $content = '';
+		open(my $INFILE, '<:utf8', $file) or $self->msg(0, "$!: '$file'", 'error');
+			while(!eof($INFILE)){
+				$content .= getc($INFILE);
+			}
+		close($INFILE);
+		return JSON::from_json($content);
+	}
+
+	sub msg{
+		my $self           = shift;
+		my $verb_threshold = shift;
+		my $msg            = shift;
+		my $type           = shift;
+		my $caller_inc     = shift // 0;
+		return 0 if $self->{'verbose'} < $verb_threshold;
+		push @{$self->{'_messages'}}, {'type' => $type, 'msg' => $msg} if defined $type;
+		$type = (defined $type ? "$type in ": '');
+		my $timestamp = $self->get_time_iso_;
+		# my ($package, $filename, $line, $subr, $has_args, $wantarray, $evaltext, 
+		# $is_require, $hints, $bitmask, $hinthash) = caller(0);
+		my @callers = caller(0 + $caller_inc);
+		my $line = $callers[2];
+		@callers = caller(1 + $caller_inc);
+		my $subr = $callers[3] // '[no sub]';
+		if($self->{'verbose'} > 1){
+			print "$timestamp $type$subr:$line: ";
+		}elsif($type ne ''){
+			print "$type$subr:$line: ";
+		}
+		print "$msg\n";
+		return 1;
+	}
+
+	sub save_json_file{
+		my $self    = shift;
+		my $file    = shift;
+		my $content = shift;
+		open(my $OUTFILE, '>', $file) or $self->msg(0, "$!: '$file'", 'error');
+			print $OUTFILE JSON::to_json($content, {'utf8' => 1, 'pretty' => 1});
+		close($OUTFILE);
+		$self->msg(1, "saved '$file'.");
+		return 1;
+	}
+
+	sub scrobble_forked{
+		my $self  = shift;
+		my $track = shift;
+		my $success = 0;
+		if($track->{'artist'} . $track->{'track'} ne ''){
+			$self->msg(2, "scrobbling: $track->{'artist'} -- $track->{'track'}");
+			$success = 1;
+			my $pid = fork();
+			if(not defined $pid){
+				$self->msg(0, 'resources not avilable.', 'error');
+			}elsif($pid == 0){
+				$self->scrobble($track);
+				exit 0;
+			}else{
+				#waitpid($pid, 0);
+			}
+		}else{
+			$self->msg(2, "cannot scrobble: $track->{'artist'} -- " 
+				. "$track->{'track'}", 'warning');
+		}
+		return $success;
+	}
+
+	sub scrobble{
+		my $self       = shift;
+		my $track_hash = shift;
+		if($track_hash->{'artist'} and $track_hash->{'track'}){
+			unless(defined $self->get_mobile_session()){
+				$self->msg(0, 'could not get a session key', 'error');
+				die;
+			}
+			$self->msg(1, 
+				"scrobbling track '$track_hash->{'artist'}' -- '$track_hash->{'track'}'");
+			$track_hash->{'timestamp'} = time unless defined $track_hash->{'timestamp'};
+			my $json = $self->get_lastfm({
+					'method' => 'track.scrobble',
+					'sk' => $self->{'session_key'},
+					%$track_hash,
+				}, 1, 'POST'
+			);
+			# parse response for acceptance and corrections
+			my $sc = $json->{'scrobbles'};
+			if(defined $sc){
+				unless(defined $sc->{'@attr'}{'accepted'} 
+					&& $sc->{'@attr'}{'accepted'} == 1){
+					$self->msg(0, 'scrobble data were not accepted', 'warning');
+				}
+				unless(defined $sc->{'@attr'}{'ignored'} && $sc->{'@attr'}{'ignored'} == 0){
+					$self->msg(0, 'scrobble data were ignored', 'warning');
+				}
+				$sc = $sc->{'scrobble'};
+				for my $field('album', 'artist', 'track'){
+					if(defined $sc->{$field}{'corrected'} && $sc->{$field}{'corrected'} == 1){
+						$self->msg(1, "field '$field' corrected to '$sc->{$field}{'#text'}'");
+					}
+				}
+			}else{
+				$self->msg(0, 'scrobbling seemed to have failed.', 'warning');
+			}
+			$self->msg(4, Dumper($json));
+		}else{
+			$self->msg(0, 'could not scrobble. artist or track name missing', 'warning');
+		}
+		return 1;
+	}
+
+	sub scrobble_from_source{
+		my $self = shift;
+		my $source = shift;
+		if($source =~ /^star\s*fm\s*berlin$/i){
+			$source = 'https://berlin.starfm.de/player/pls/berlin_pls_mp3.php';
+		}elsif($source =~ /^star\s*fm\s*from\s*hell$/i){
+			$source = 'https://berlin.starfm.de/player/pls/from_hell_pls_mp3.php';
+		}
+		my $scrobble_data;
+		if(defined $source){
+			if(-e $source){
+				$scrobble_data = $self->load_json_file($source);
+			}elsif($source =~ /^https?:\/\//){
+				if($source =~ /^https?:\/\/(?:[a-z0-9_]+\.)?bandcamp\.com\//){
+					$scrobble_data = {
+						'tracks' => $self->bandcamp_collect_trackinfos($source)
+					};
+				}else{
+					my $playlist = $self->get_http_content($source);
+					if($playlist =~ /File1=(.*)/){
+						$source = $1;
+					}
+					my ($stream, $icy_metaint) = $self->stream_connect($source);
+					if($stream && defined($icy_metaint)){
+						# endless loop
+						$self->stream_read_current_track($icy_metaint);
+					}
+				}
+				unless(defined $scrobble_data){
+					$self->msg(0, "don't know how to use the url '$source'" . 
+						' or could not connect to it.', 'error');
+				}
+			}else{
+				$self->msg(0, 'could not read source, see --help for more info', 'error');
+			}
+		}
+		if(defined $scrobble_data){
+			for my $track(@{$scrobble_data->{'tracks'}}){
+				$self->scrobble($track);
+			}
+		}
+		return 1;
+	}
+
+	sub update_now_playing_forked{
+		my $self  = shift;
+		my $track = shift;
+		my $pid = fork();
+		if(not defined $pid){
+			$self->msg(0, 'resources not avilable.', 'error');
+		}elsif($pid == 0){
+			$self->update_now_playing($track);
+			exit 0;
+		}else{
+			#waitpid($pid, 0);
+		}
+		return 1;
+	}
+
+	sub update_now_playing{
+		my $self       = shift;
+		my $track_hash = shift;
+		if($track_hash->{'artist'} and $track_hash->{'track'}){
+			unless(defined $self->get_mobile_session()){
+				$self->msg(0, 'could not get a session key', 'error');
+				die;
+			}
+			$self->msg(1, 'update now playing with track ' 
+				. "'$track_hash->{'artist'}' -- '$track_hash->{'track'}'");
+			$track_hash->{'timestamp'} = time unless defined $track_hash->{'timestamp'};
+			my $json = $self->get_lastfm({
+					'method' => 'track.updatenowplaying',
+					'sk' => $self->{'session_key'},
+					%$track_hash,
+				}, 1, 'POST'
+			);
+			# parse response for acceptance and corrections
+			my $sc = $json->{'nowplaying'};
+			if(defined $sc){
+				for my $field('album', 'artist', 'track'){
+					if(defined $sc->{$field}{'corrected'} && $sc->{$field}{'corrected'} == 1){
+						$self->msg(1, "field '$field' corrected to '$sc->{$field}{'#text'}'");
+					}
+				}
+			}else{
+				$self->msg(0, 'updating of now playing track seemed to have failed.', 
+					'warning');
+			}
+			#$self->msg(1, Dumper($json));
+		}else{
+			$self->msg(0, 'could not update now playing. artist or track name missing', 
+				'warning');
+		}
+		return 1;
+	}
+
+}
+
+# main
+my $params = syntaxCheck(@ARGV);
+my $lfm_dl = Lastfm_dl->new({
+		'password'      => $params->{'password'},
+		'password-file' => $params->{'password-file'},
+		'stream-out'    => $params->{'stream-out'},
+		'username'      => $params->{'user'},
+		'verbose'       => $params->{'verbose'},
+	}
+);
+#$lfm_dl->authenticate;
+#$lfm_dl->get_session;
+if($params->{'dl'}){
+	if(defined $params->{'user'}){
+		$lfm_dl->get_all_user_data($params->{'user'});
+	}else{
+		$lfm_dl->msg(0, 'username required', 'error');
+	}
+}
+if(defined $params->{'scrobble'}){
+	# not neccesary here, but it's better to check the credentials early
+	$lfm_dl->get_mobile_session() 
+		or die "could not login at last.fm with given credentials\n";
+	$lfm_dl->scrobble_from_source($params->{'scrobble'});
+}
+
+
+__END__
+
+=head1 NAME
+
+downloads last.fm profiles and helps scrobbling from files or radio stations
+
+=head1 DESCRIPTION
+
+dl_lfm downloads last.fm profiles or helps scrobbling from files or radio stations.
+
+=head1 SYNOPSIS
+
+dl_lfm [options]
+
+      --dl                    download all data from user (requires -u)
+      --password=string       password
+      --password-file=string  a file containing your last-fm password
+  -s  --scrobble=src          use this file or radio station to scrobble some 
+                               tracks, see --man for suported file types and urls
+      --stream-out=dest       use this destination to send the stream to 
+                               (if scrobbling from stream), default = '| vlc -'
+  -u, --user=string           username
+  -t, --test                  don't download anything
+
+meta:
+
+  -V, --version               display version and exit.
+  -h, --help                  display brief help
+      --man                   display long help (man page)
+  -q, --silent                same as --verbose=0
+  -v, --verbose               same as --verbose=1 (default)
+  -vv,--very-verbose          same as --verbose=2
+  -v, --verbose=x             grade of verbosity
+                               x=0: no output
+                               x=1: default output
+                               x=2: much output
+
+example:
+
+  dl_lfm --dl --user='testtesttest123123123'
+    gets all public information on user 'testtesttest123123123' from last.fm 
+    and saves that data into several files.
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--dl>
+
+requires B<--user>=I<username>.
+
+gets all public information on I<username> from last.fm and saves that data into 
+several files.
+be aware that those can get quite big. a scrobble is approximately 2KiB large. 
+so 10k scrobbles cost around 20MiB free space on your hard drive.
+
+=item B<--password>=I<string>
+
+use this password for last.fm user B<--user>=I<username>.
+
+=item B<--password-file>=I<string>
+
+use the first line of this file a password for last.fm. 
+default = $HOME/.password_lastfm
+
+=item B<--scrobble>=I<source>, B<-s> I<source>
+
+requires B<--user>=I<username> and B<--password>=I<password> for last.fm.
+
+use I<source> for scrobbling some tracks to last.fm.
+
+supported file type(s): json
+
+OR
+
+supported urls: https://{band or label name}.bandcamp.com/album/{albumname}
+
+OR
+
+supported radio stations format: {protocol}://{ip address}:{port}
+
+=item B<--stream-out>=I<destination>
+
+if scrobbling to a stream (see B<--scrobble>), then this param can be used to adjust the destination where the stream data shall forwarded to.
+
+default: I<destination> = '| vlc -', i.e., the stream data will be piped '|' to a 
+new instance of vlc, where the parameter '-' means, that vlc will read the stream 
+from STDIN.
+
+other possibilities: '> output.mp3' to pipe the streaming data directly into a file.
+
+=item B<--user>=I<username>, B<-u> I<username>
+
+use this last.fm username, e.g. for B<--dl>
+
+=item B<--test>, B<-t>
+
+don't download anything
+
+=item B<--version>, B<-V>
+
+prints version and exits.
+
+=item B<--help>, B<-h>, B<-?>
+
+prints a brief help message and exits.
+
+=item B<--man>
+
+prints the manual page and exits.
+
+=item B<--verbose>=I<number>, B<-v> I<number>
+
+set grade of verbosity to I<number>. if I<number>==0 then no output
+will be given, except hard errors. the higher I<number> is, the more 
+output will be printed. default: I<number> = 1.
+
+=item B<--silent, --quiet, -q>
+
+same as B<--verbose=0>.
+
+=item B<--very-verbose, -vv>
+
+same as B<--verbose=2>. you may use B<-vvv> for B<--verbose=3> a.s.o.
+
+=item B<--verbose, -v>
+
+same as B<--verbose=1>.
+
+=back
+
+=head1 LICENCE
+
+Copyright (c) 2016, seth
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+originally written by seth
+
+=cut

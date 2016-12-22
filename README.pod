@@ -1,0 +1,157 @@
+=head1 NAME
+
+downloads last.fm profiles and helps scrobbling from files or radio stations
+
+=head1 DESCRIPTION
+
+dl_lfm downloads last.fm profiles or helps scrobbling from files or radio stations.
+
+=head1 SYNOPSIS
+
+dl_lfm [options]
+
+      --dl                    download all data from user (requires -u)
+      --password=string       password
+      --password-file=string  a file containing your last-fm password
+  -s  --scrobble=src          use this file or radio station to scrobble some 
+                               tracks, see --man for suported file types and urls
+      --stream-out=dest       use this destination to send the stream to 
+                               (if scrobbling from stream), default = '| vlc -'
+  -u, --user=string           username
+  -t, --test                  don't download anything
+
+meta:
+
+  -V, --version               display version and exit.
+  -h, --help                  display brief help
+      --man                   display long help (man page)
+  -q, --silent                same as --verbose=0
+  -v, --verbose               same as --verbose=1 (default)
+  -vv,--very-verbose          same as --verbose=2
+  -v, --verbose=x             grade of verbosity
+                               x=0: no output
+                               x=1: default output
+                               x=2: much output
+
+example:
+
+  dl_lfm --dl --user='testtesttest123123123'
+    gets all public information on user 'testtesttest123123123' from last.fm 
+    and saves that data into several files.
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--dl>
+
+requires B<--user>=I<username>.
+
+gets all public information on I<username> from last.fm and saves that data into 
+several files.
+be aware that those can get quite big. a scrobble is approximately 2KiB large. 
+so 10k scrobbles cost around 20MiB free space on your hard drive.
+
+=item B<--password>=I<string>
+
+use this password for last.fm user B<--user>=I<username>.
+
+=item B<--password-file>=I<string>
+
+use the first line of this file a password for last.fm. 
+default = $HOME/.password_lastfm
+
+=item B<--scrobble>=I<source>, B<-s> I<source>
+
+requires B<--user>=I<username> and B<--password>=I<password> for last.fm.
+
+use I<source> for scrobbling some tracks to last.fm.
+
+supported file type(s): json
+
+OR
+
+supported urls: https://{band or label name}.bandcamp.com/album/{albumname}
+
+OR
+
+supported radio stations format: {protocol}://{ip address}:{port}
+
+=item B<--stream-out>=I<destination>
+
+if scrobbling to a stream (see B<--scrobble>), then this param can be used to adjust the destination where the stream data shall forwarded to.
+
+default: I<destination> = '| vlc -', i.e., the stream data will be piped '|' to a 
+new instance of vlc, where the parameter '-' means, that vlc will read the stream 
+from STDIN.
+
+other possibilities: '> output.mp3' to pipe the streaming data directly into a file.
+
+=item B<--user>=I<username>, B<-u> I<username>
+
+use this last.fm username, e.g. for B<--dl>
+
+=item B<--test>, B<-t>
+
+don't download anything
+
+=item B<--version>, B<-V>
+
+prints version and exits.
+
+=item B<--help>, B<-h>, B<-?>
+
+prints a brief help message and exits.
+
+=item B<--man>
+
+prints the manual page and exits.
+
+=item B<--verbose>=I<number>, B<-v> I<number>
+
+set grade of verbosity to I<number>. if I<number>==0 then no output
+will be given, except hard errors. the higher I<number> is, the more 
+output will be printed. default: I<number> = 1.
+
+=item B<--silent, --quiet, -q>
+
+same as B<--verbose=0>.
+
+=item B<--very-verbose, -vv>
+
+same as B<--verbose=2>. you may use B<-vvv> for B<--verbose=3> a.s.o.
+
+=item B<--verbose, -v>
+
+same as B<--verbose=1>.
+
+=back
+
+=head1 LICENCE
+
+Copyright (c) 2016, seth
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+originally written by seth
+
