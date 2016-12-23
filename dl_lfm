@@ -6,12 +6,13 @@
 
 use strict;
 use warnings;
+use Carp;                     # better output on errors for debugging purposes
 use Data::Dumper;
 use Getopt::Long qw(:config bundling);
 use Pod::Usage;
 use POSIX qw/strftime/;       # format timestamp
 
-$main::VERSION = '0.3';
+$main::VERSION = '0.4';
 binmode STDOUT, ":utf8";
 
 # functions
@@ -26,7 +27,7 @@ binmode STDOUT, ":utf8";
 # Lastfm_dl: main class 
 # ---------------------
 # sub authenticate
-#		unused
+#		unused: last.fm authentication
 #
 #	sub bandcamp_collect_trackinfos
 #		given an url to a bandcamp album, this function returns information on 
@@ -351,7 +352,7 @@ sub syntaxCheck{
 		if($url =~ /https?:\/\/([^:\/]*)(?:\:(\d+))?(?:\/(.*))?/){
 			my $host = $1;
 			my $port = $2 // 80;
-			my $file = '/' . $3;
+			my $file = '/' . ($3 // '');
 			$self->msg(1, "connecting to $host:$port");
 			$socket = IO::Socket::INET->new(
 				PeerHost => $host,
@@ -371,11 +372,12 @@ sub syntaxCheck{
 				$self->msg(2, "waiting for reply");
 				my $header = <$socket>;
 				chomp($header);
-				$self->msg(2, $header);
 				unless($header =~ /200|OK/){
-					$self->msg(0, 'reading of stream header failed', 'error');
-					exit 1;
+					$self->msg(1, "header = $header");
+					$self->msg(0, 'reading of stream header failed.', 'warning');
+					return (undef, undef);
 				}
+				$self->msg(2, $header);
 				my %icy_info = ();
 				while($header = <$socket>){
 					$header =~ s/[\r\n]+$//;
@@ -444,17 +446,26 @@ sub syntaxCheck{
 		$SIG{'CHLD'} = 'IGNORE'; # avoid creating zombies with fork
 		my $state = 'scrobble';
 		ReadMode('cbreak') if defined &ReadMode;
+		my %stats = ( # used for statistics on stream
+			'info_bytes'  => 0,
+			'music_bytes' => 0,
+			'played'      => [],
+			'start_time'  => time(),
+		); 
 		while($socket->read($content, $byte_inc)){
+			$stats{'music_bytes'} += $byte_inc;
 			#printf "read %d, %d\n", length($content), $byte_inc;
-			$state = $self->stream_scrobble_user_interface(\%last_track, $state);
+			$state = $self->stream_scrobble_user_interface(\%last_track, $state, \%stats);
 			print HANDLER $content;
 			if(defined $icy_metaint){
 				$byte_count += $byte_inc;
 				if($byte_count == $icy_metaint){
 					$socket->read($content, 1);
+					++$stats{'info_bytes'};
 					my $length = 16 * ord($content);
 					if($length > 0){
 						$socket->read($content, $length);
+						$stats{'info_bytes'} += $length;
 						$content =~ s/\s+$//;
 						$self->msg(4, $content);
 						if($content ne $info){
@@ -465,17 +476,23 @@ sub syntaxCheck{
 									if($last_track{'artist'} ne $current_track->{'artist'} ||
 										$last_track{'track'} ne $current_track->{'track'}){
 										if($state eq 'scrobble'){
-											$self->scrobble_forked(\%last_track);
+											if($self->scrobble_forked(\%last_track)){
+												$stats{'played'}->[-1]{'scrobbled'} = 1;
+												$stats{'played'}->[-1]{'time'} = time();
+											}
 										}else{
 											$self->msg(2, 'skip scrobbling');
 											$state = 'scrobble' if $state eq 'skip';
 										}
-										$self->scrobble_forked($current_track, 'now playing');
 										$last_track{'artist'} = $current_track->{'artist'};
 										$last_track{'track'} = $current_track->{'track'};
-									}else{
-										$self->scrobble_forked($current_track, 'now playing');
+										push @{$stats{'played'}}, {
+											%$current_track,
+											'time' => time,
+											'scrobbled' => 0,
+										};
 									}
+									$self->scrobble_forked($current_track, 'now playing');
 								}else{
 									$self->msg(1, $current_track);
 								}
@@ -500,10 +517,14 @@ sub syntaxCheck{
 		my $self = shift;
 		my $last_track = shift;
 		my $state = shift;
+		my $stats = shift;
 		my $key = ReadKey(-1) if defined &ReadKey;
 		if(defined $key){
 			if($key eq 'i'){
-				$self->scrobble_forked($last_track);
+				if($self->scrobble_forked($last_track)){
+					$stats->{'played'}[-1]{'scrobbled'} = 1;
+					$stats->{'played'}[-1]{'time'} = time();
+				}
 				$state = 'skip';
 			}elsif($key eq 'n'){
 				$self->msg(1, 'no scrobbling from now on.');
@@ -514,11 +535,40 @@ sub syntaxCheck{
 			}elsif($key eq 's'){
 				$self->msg(1, 'scrobbling from now on.');
 				$state = 'scrobble';
+			}elsif($key eq 't'){
+				my $time_playing = time() - $stats->{'start_time'};
+				my $bytes_rec = $stats->{'info_bytes'} + $stats->{'music_bytes'};
+				my $scrobbled =()= grep {$_->{'scrobbled'}} @{$stats->{'played'}};
+				$self->msg(1, '-'x72); 
+				$self->msg(1, sprintf('playing since %s (%us)', 
+						'' . localtime($stats->{'start_time'}), 
+						$time_playing,
+					)
+				);
+				$self->msg(1, 
+					sprintf('bytes received: %uMB (%ukB music + %ukB info) at rate %ukB/s', 
+						$bytes_rec / 1e6, # no Mebi
+						$stats->{'music_bytes'} / 1000, 
+						$stats->{'info_bytes'} / 1000,
+						$bytes_rec / (1000 * $time_playing),
+					)
+				);
+				$self->msg(1, 
+					sprintf('played tracks %u (avg. %u per hour), ' 
+						. 'scrobbled %u (avg. %u per hour)', 
+						scalar(@{$stats->{'played'}}), 
+						scalar(@{$stats->{'played'}}) * 60 * 60 / $time_playing, 
+						$scrobbled, 
+						$scrobbled * 60 * 60 / $time_playing, 
+					)
+				);
+				$self->msg(1, '-'x72); 
 			}else{
-				$self->msg(1, 'i - immediately scrobble current track');
-				$self->msg(1, 'n - no scrobbling');
-				$self->msg(1, 'k - skip scrobbling for current track');
-				$self->msg(1, 's - scrobbling');
+				$self->msg(1, 'i - Immediately scrobble current track');
+				$self->msg(1, 'n - No scrobbling');
+				$self->msg(1, 'k - sKip scrobbling for current track');
+				$self->msg(1, 's - Scrobbling');
+				$self->msg(1, 't - sTatistics');
 			}
 		}
 		return $state;
@@ -1012,13 +1062,16 @@ sub syntaxCheck{
 				}else{
 					# radio stream
 					my $playlist = $self->get_http_content($source);
-					if($playlist =~ /File1=(.*)/){
-						$source = $1;
-					}
-					my ($stream, $icy_metaint) = $self->stream_connect($source);
-					if($stream && defined($icy_metaint)){
-						# endless loop (scrobbling will be done there)
-						$self->stream_read_current_track($icy_metaint);
+					my @sources = ($playlist =~ /File.=(.*)/g);
+					@sources = ($source) if @sources == 0;
+					$self->msg(2, 'found following ressources: ' . Dumper(\@sources));
+					my ($stream, $icy_metaint);
+					for(my $i = 0; $i < @sources && !defined($stream); ++$i){
+						($stream, $icy_metaint) = $self->stream_connect($sources[$i]);
+						if($stream && defined($icy_metaint)){
+							# endless loop (scrobbling will be done there)
+							$self->stream_read_current_track($icy_metaint);
+						}
 					}
 				}
 				unless(defined $scrobble_data){
