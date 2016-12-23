@@ -96,18 +96,12 @@ binmode STDOUT, ":utf8";
 #		non-blocking call of scrobble
 #
 # sub scrobble
-#		scrobble a given track to the current last.fm profile
+#		scrobble a given track to the current last.fm profile or update the 
+#		"now playing" track
 #
 # sub scrobble_from_source
 #		handle different kind of music sources:	
 #		bandcamp-album-url, radio stream, json file
-#
-# sub update_now_playing_forked
-#		non-blocking call of update_now_playing
-#
-# sub update_now_playing
-#		set a given track to the current last.fm profile as 'now playing'
-#
 
 # Carp::Always
 sub _die {
@@ -476,11 +470,11 @@ sub syntaxCheck{
 											$self->msg(2, 'skip scrobbling');
 											$state = 'scrobble' if $state eq 'skip';
 										}
-										$self->update_now_playing_forked($current_track);
+										$self->scrobble_forked($current_track, 'now playing');
 										$last_track{'artist'} = $current_track->{'artist'};
 										$last_track{'track'} = $current_track->{'track'};
 									}else{
-										$self->update_now_playing_forked($current_track);
+										$self->scrobble_forked($current_track, 'now playing');
 									}
 								}else{
 									$self->msg(1, $current_track);
@@ -925,6 +919,7 @@ sub syntaxCheck{
 	sub scrobble_forked{
 		my $self  = shift;
 		my $track = shift;
+		my $now_playing = shift;
 		my $success = 0;
 		if($track->{'artist'} . $track->{'track'} ne ''){
 			$self->msg(2, "scrobbling: $track->{'artist'} -- $track->{'track'}");
@@ -933,7 +928,7 @@ sub syntaxCheck{
 			if(not defined $pid){
 				$self->msg(0, 'resources not avilable.', 'error');
 			}elsif($pid == 0){
-				$self->scrobble($track);
+				$self->scrobble($track, $now_playing);
 				exit 0;
 			}else{
 				#waitpid($pid, 0);
@@ -946,44 +941,52 @@ sub syntaxCheck{
 	}
 
 	sub scrobble{
-		my $self       = shift;
-		my $track_hash = shift;
+		my $self        = shift;
+		my $track_hash  = shift;
+		my $now_playing = shift;
 		if($track_hash->{'artist'} and $track_hash->{'track'}){
 			unless(defined $self->get_mobile_session()){
 				$self->msg(0, 'could not get a session key', 'error');
 				die;
 			}
+			my $type = $now_playing ? 'updating "now playing" with' : 'scrobbling';
 			$self->msg(1, 
-				"scrobbling track '$track_hash->{'artist'}' -- '$track_hash->{'track'}'");
+				"$type track '$track_hash->{'artist'}' -- '$track_hash->{'track'}'");
 			$track_hash->{'timestamp'} = time unless defined $track_hash->{'timestamp'};
 			my $json = $self->get_lastfm({
-					'method' => 'track.scrobble',
+					'method' => ($now_playing ? 'track.updatenowplaying' : 'track.scrobble'),
 					'sk' => $self->{'session_key'},
 					%$track_hash,
 				}, 1, 'POST'
 			);
 			# parse response for acceptance and corrections
-			my $sc = $json->{'scrobbles'};
+			my $sc = $now_playing ? $json->{'nowplaying'} : $json->{'scrobbles'};
 			if(defined $sc){
-				unless(defined $sc->{'@attr'}{'accepted'} 
-					&& $sc->{'@attr'}{'accepted'} == 1){
-					$self->msg(0, 'scrobble data were not accepted', 'warning');
+				unless(defined $now_playing){
+					unless(defined $sc->{'@attr'}{'accepted'} 
+						&& $sc->{'@attr'}{'accepted'} == 1){
+						$self->msg(0, 'scrobble data were not accepted', 'warning');
+					}
+					unless(defined $sc->{'@attr'}{'ignored'}
+						&& $sc->{'@attr'}{'ignored'} == 0){
+						$self->msg(0, 'scrobble data were ignored', 'warning');
+					}
+					$sc = $sc->{'scrobble'};
 				}
-				unless(defined $sc->{'@attr'}{'ignored'} && $sc->{'@attr'}{'ignored'} == 0){
-					$self->msg(0, 'scrobble data were ignored', 'warning');
-				}
-				$sc = $sc->{'scrobble'};
 				for my $field('album', 'artist', 'track'){
 					if(defined $sc->{$field}{'corrected'} && $sc->{$field}{'corrected'} == 1){
 						$self->msg(1, "field '$field' corrected to '$sc->{$field}{'#text'}'");
 					}
 				}
 			}else{
-				$self->msg(0, 'scrobbling seemed to have failed.', 'warning');
+				$self->msg(0, ($now_playing ? 'updating "now playing"' : 'scrobbling') 
+					. ' seemed to have failed.', 'warning');
 			}
 			$self->msg(4, Dumper($json));
 		}else{
-			$self->msg(0, 'could not scrobble. artist or track name missing', 'warning');
+			$self->msg(0, 'could not ' 
+				. ($now_playing ? 'update "now playing"' : 'scrobble')
+				. '. artist or track name missing', 'warning');
 		}
 		return 1;
 	}
@@ -1030,58 +1033,6 @@ sub syntaxCheck{
 			for my $track(@{$scrobble_data->{'tracks'}}){
 				$self->scrobble($track);
 			}
-		}
-		return 1;
-	}
-
-	sub update_now_playing_forked{
-		my $self  = shift;
-		my $track = shift;
-		my $pid = fork();
-		if(not defined $pid){
-			$self->msg(0, 'resources not avilable.', 'error');
-		}elsif($pid == 0){
-			$self->update_now_playing($track);
-			exit 0;
-		}else{
-			#waitpid($pid, 0);
-		}
-		return 1;
-	}
-
-	sub update_now_playing{
-		my $self       = shift;
-		my $track_hash = shift;
-		if($track_hash->{'artist'} and $track_hash->{'track'}){
-			unless(defined $self->get_mobile_session()){
-				$self->msg(0, 'could not get a session key', 'error');
-				die;
-			}
-			$self->msg(1, 'update now playing with track ' 
-				. "'$track_hash->{'artist'}' -- '$track_hash->{'track'}'");
-			$track_hash->{'timestamp'} = time unless defined $track_hash->{'timestamp'};
-			my $json = $self->get_lastfm({
-					'method' => 'track.updatenowplaying',
-					'sk' => $self->{'session_key'},
-					%$track_hash,
-				}, 1, 'POST'
-			);
-			# parse response for acceptance and corrections
-			my $sc = $json->{'nowplaying'};
-			if(defined $sc){
-				for my $field('album', 'artist', 'track'){
-					if(defined $sc->{$field}{'corrected'} && $sc->{$field}{'corrected'} == 1){
-						$self->msg(1, "field '$field' corrected to '$sc->{$field}{'#text'}'");
-					}
-				}
-			}else{
-				$self->msg(0, 'updating of now playing track seemed to have failed.', 
-					'warning');
-			}
-			#$self->msg(1, Dumper($json));
-		}else{
-			$self->msg(0, 'could not update now playing. artist or track name missing', 
-				'warning');
 		}
 		return 1;
 	}
