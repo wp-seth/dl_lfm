@@ -16,9 +16,123 @@ binmode STDOUT, ":utf8";
 
 # functions
 # =========
+# sub _die
+#		verbose output on errors
+# sub _warn
+#		verbose output on warnings
 # sub syntaxCheck
 #		check input of user
 #
+# Lastfm_dl: main class 
+# ---------------------
+# sub authenticate
+#		unused
+#
+#	sub bandcamp_collect_trackinfos
+#		given an url to a bandcamp album, this function returns information on 
+#		album title, tracks (number, title, duration) and artist in a last.fm
+#		compatible format
+#
+#	sub stream_connect
+#		given an url, connect to a http(s)-shoutcast-stream; 
+#		return socket and icy-metadata
+#
+#	sub stream_parse_icy_info
+#		given a icy info string, try to get artist and title
+#
+#	sub stream_read_current_track
+#		after stream_connect, this function reads the stream from the socket.
+#		forwards the pure music stream (w/o icy info) to a given process (like vlc) or
+#		a file.
+#		the icy info is used to scrobble the track into a given last.fm profile.
+#
+#	sub stream_scrobble_user_interface
+#		a simple user interface can be used to skip/stop scrobbling when using a stream
+#
+#	sub get_all_user_data
+#		get all important user statistics from last.fm for a given user and save it to 
+#		a json file.
+#
+#	sub get_http_content
+#		given an url, a http method (GET or POST) and additional params, this function
+#		returns the content of the page and the http status code
+#
+#	sub get_lastfm
+#		wrapper for last.fm api, returns results as a json-like struct
+#
+#	sub get_mobile_session
+#		login at last.fm as a given user, returns a session key
+#
+# sub get_time_iso
+# 	get date and time as formatted string "%Y-%m-%d%H:%M:%S" from given (or current)
+# 	unix timestamp
+#
+# sub get_time_iso_
+# 	get date and time as formatted string "%Y-%m-%d %H:%M:%S" from given 
+# 	(or current) unix timestamp
+#
+# sub get_token
+#		get a last.fm token
+#
+# sub get_session
+#		unused: get a last.fm session
+#
+# sub get_user_info
+#		unused: get info on a last.fm user
+#
+# sub get_user_past_events
+#		get all events that a last.fm user went
+#
+#	sub load_json_file
+#		load a json file into a perl struct
+#
+# sub msg
+# 	write some info message to STDOUT
+#
+#	sub save_json_file
+#		save a perl struct to a json file
+#
+# sub scrobble_forked
+#		non-blocking call of scrobble
+#
+# sub scrobble
+#		scrobble a given track to the current last.fm profile
+#
+# sub scrobble_from_source
+#		handle different kind of music sources:	
+#		bandcamp-album-url, radio stream, json file
+#
+# sub update_now_playing_forked
+#		non-blocking call of update_now_playing
+#
+# sub update_now_playing
+#		set a given track to the current last.fm profile as 'now playing'
+#
+
+# Carp::Always
+sub _die {
+	die @_ if ref($_[0]);
+	if($_[-1] =~ /\n$/s){ # $_ is a read-only value
+		my $arg = pop @_;
+		$arg =~ s/.*\K at .*? line .*?\n$//s;
+		push @_, $arg;
+	}
+	unshift @_, strftime("%Y-%m-%d %H:%M:%S ", gmtime());
+	die &Carp::longmess;
+}
+
+sub _warn {
+	if($_[-1] =~ /\n$/s){ # $_ is a read-only value
+		my $arg = pop @_;
+		$arg =~ s/.*\K at .*? line .*?\n$//s;
+		push @_, $arg;
+	}
+	unshift @_, strftime("%Y-%m-%d %H:%M:%S ", gmtime());
+	warn &Carp::longmess;
+}
+
+$SIG{__DIE__} = \&_die;
+$SIG{__WARN__} = \&_warn;
 
 sub syntaxCheck{
 	my %params = ( # default cli params
@@ -260,20 +374,34 @@ sub syntaxCheck{
 					"User-Agent: dl_lfm v$::VERSION\n\n";
 				$self->msg(2, "sending header: $send_header");
 				$socket->send($send_header);
-				$self->msg(1, "waiting for reply");
+				$self->msg(2, "waiting for reply");
 				my $header = <$socket>;
-				$self->msg(1, $header);
+				chomp($header);
+				$self->msg(2, $header);
 				unless($header =~ /200|OK/){
 					$self->msg(0, 'reading of stream header failed', 'error');
 					exit 1;
 				}
+				my %icy_info = ();
 				while($header = <$socket>){
+					$header =~ s/[\r\n]+$//;
+					$icy_info{'content-type'} = $1 if $header =~ /^Content-Type:(.+)/;
+					$icy_info{'bitrate'} = $1      if $header =~ /^icy-br:([0-9]+)/;
+					$icy_info{'genre'} = $1        if $header =~ /^icy-genre:(.+)/;
+					$icy_info{'radio'} = $1        if $header =~ /^icy-name:(.+)/;
+					$icy_info{'url'} = $1          if $header =~ /^icy-url:(.+)/;
 					if($header =~ /^icy-metaint:([0-9]+)/){
 						$icy_metaint = $1;
 					}
-					chomp($header);
-					$self->msg(2, "header: $header");
+					$self->msg(3, "header: $header");
 					last unless $header =~ /\S/;
+				}
+				if(keys(%icy_info) > 0){ # print some information
+					$self->msg(1, 'radio: ' . ($icy_info{'radio'} // 'unknown') . ' from ' 
+						. ($icy_info{'url'} // 'unknown'));
+					$self->msg(1, 'audio type: ' . ($icy_info{'content-type'} // 'unknown') 
+						. ' with bitrate ' . ($icy_info{'bitrate'} // 'unknown'));
+					$self->msg(1, 'genre: ' . ($icy_info{'genre'} // 'unknown'));
 				}
 				defined $icy_metaint or $self->msg(0, 'no icy meta intervall found', 
 					'warning');
@@ -315,32 +443,16 @@ sub syntaxCheck{
 		$self->msg(1, "redirecting HTTP filestream to '$outstream'");
 		my %last_track = ('artist' => '', 'track' => '');
 		my $socket = $self->{'socket'};
+		unless(defined $socket){
+			$self->msg(0, 'socket not defined. did you call stream_connect already?', 'error');
+			return 0;
+		}
 		$SIG{'CHLD'} = 'IGNORE'; # avoid creating zombies with fork
 		my $state = 'scrobble';
 		ReadMode('cbreak') if defined &ReadMode;
 		while($socket->read($content, $byte_inc)){
 			#printf "read %d, %d\n", length($content), $byte_inc;
-			my $key = ReadKey(-1) if defined &ReadKey;
-			if(defined $key){
-				if($key eq 'i'){
-					$self->scrobble_forked(\%last_track);
-					$state = 'skip';
-				}elsif($key eq 'n'){
-					$self->msg(1, 'no scrobbling from now on.');
-					$state = 'no scrobble';
-				}elsif($key eq 'k'){
-					$self->msg(1, 'skip scrobbling of current track');
-					$state = 'skip';
-				}elsif($key eq 's'){
-					$self->msg(1, 'scrobbling from now on.');
-					$state = 'scrobble';
-				}else{
-					$self->msg(1, 'i - immediately scrobble current track');
-					$self->msg(1, 'n - no scrobbling');
-					$self->msg(1, 'k - skip scrobbling for current track');
-					$self->msg(1, 's - scrobbling');
-				}
-			}
+			$state = $self->stream_scrobble_user_interface(\%last_track, $state);
 			print HANDLER $content;
 			if(defined $icy_metaint){
 				$byte_count += $byte_inc;
@@ -364,14 +476,10 @@ sub syntaxCheck{
 											$self->msg(2, 'skip scrobbling');
 											$state = 'scrobble' if $state eq 'skip';
 										}
-										$self->msg(2, "playing: '$current_track->{'artist'}' "
-											. "-- '$current_track->{'track'}'");
 										$self->update_now_playing_forked($current_track);
 										$last_track{'artist'} = $current_track->{'artist'};
 										$last_track{'track'} = $current_track->{'track'};
 									}else{
-										$self->msg(2, "still playing '$current_track->{'artist'}' "
-											. "-- '$current_track->{'track'}'");
 										$self->update_now_playing_forked($current_track);
 									}
 								}else{
@@ -391,6 +499,35 @@ sub syntaxCheck{
 		ReadMode('restore') if defined &ReadMode;
 		close HANDLER;
 		$socket->close;
+		return 1;
+	}
+
+	sub stream_scrobble_user_interface{
+		my $self = shift;
+		my $last_track = shift;
+		my $state = shift;
+		my $key = ReadKey(-1) if defined &ReadKey;
+		if(defined $key){
+			if($key eq 'i'){
+				$self->scrobble_forked($last_track);
+				$state = 'skip';
+			}elsif($key eq 'n'){
+				$self->msg(1, 'no scrobbling from now on.');
+				$state = 'no scrobble';
+			}elsif($key eq 'k'){
+				$self->msg(1, 'skip scrobbling of current track');
+				$state = 'skip';
+			}elsif($key eq 's'){
+				$self->msg(1, 'scrobbling from now on.');
+				$state = 'scrobble';
+			}else{
+				$self->msg(1, 'i - immediately scrobble current track');
+				$self->msg(1, 'n - no scrobbling');
+				$self->msg(1, 'k - skip scrobbling for current track');
+				$self->msg(1, 's - scrobbling');
+			}
+		}
+		return $state;
 	}
 
 	sub get_all_user_data{
@@ -547,7 +684,7 @@ sub syntaxCheck{
 			}
 		}
 		# credentials
-		# if user name is not defined, let user type in wiki user name
+		# if user name is not defined, let user type in last.fm user name
 		if(not defined $self->{'username'}){
 			$self->msg(1, "enter last.fm username:");
 			$self->{'username'} = <STDIN>;
@@ -861,21 +998,23 @@ sub syntaxCheck{
 		}
 		my $scrobble_data;
 		if(defined $source){
-			if(-e $source){
+			if(-e $source){ # treat files as a json source
 				$scrobble_data = $self->load_json_file($source);
 			}elsif($source =~ /^https?:\/\//){
 				if($source =~ /^https?:\/\/(?:[a-z0-9_]+\.)?bandcamp\.com\//){
+					# bandcamp album page
 					$scrobble_data = {
 						'tracks' => $self->bandcamp_collect_trackinfos($source)
 					};
 				}else{
+					# radio stream
 					my $playlist = $self->get_http_content($source);
 					if($playlist =~ /File1=(.*)/){
 						$source = $1;
 					}
 					my ($stream, $icy_metaint) = $self->stream_connect($source);
 					if($stream && defined($icy_metaint)){
-						# endless loop
+						# endless loop (scrobbling will be done there)
 						$self->stream_read_current_track($icy_metaint);
 					}
 				}
