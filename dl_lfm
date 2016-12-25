@@ -12,7 +12,7 @@ use Getopt::Long qw(:config bundling);
 use Pod::Usage;
 use POSIX qw/strftime/;       # format timestamp
 
-$main::VERSION = '0.4';
+$main::VERSION = '0.5';
 binmode STDOUT, ":utf8";
 
 # functions
@@ -76,7 +76,7 @@ binmode STDOUT, ":utf8";
 #
 # sub get_time_unix
 # 	get unix timestamp from iso-like formatted string "%Y-%m-%d %H:%M:%S" 
-# 	(using timelocal)
+# 	(using timelocal or timegm)
 #
 # sub get_token
 #		get a last.fm token
@@ -141,7 +141,8 @@ sub syntaxCheck{
 		'password'      => undef, # password
 		'password-file' => "$ENV{'HOME'}/.password_lastfm", # file containing password
 		'scrobble'      => undef, # file or radio station to scrobble
-		'timestamp'     => undef, # timestamp for scrobbling
+		'timestamp'     => undef, # timestamp in utc for scrobbling
+		'timestamp-local' => undef, # timestamp in local time for scrobbling
 		'stream-out'    => '| vlc -', # the destination for streaming data
 		'user'          => undef, # user-name
 		'verbose'       => 1,     # trace; grade of verbosity
@@ -154,6 +155,7 @@ sub syntaxCheck{
 		"scrobble|s=s",
 		"stream-out=s",
 		"timestamp=s",
+		"timestamp-local=s",
 		"user|u=s",
 		"silent|quiet|q" => sub { $params{'verbose'} = 0;},
 		"very-verbose" => sub { $params{'verbose'} = 2;},
@@ -196,7 +198,7 @@ sub syntaxCheck{
 	use URI::Escape;
 	use YAML;
 	use Term::ReadKey;          # used for user input
-	use Time::Local;            # timegm
+	use Time::Local;            # timegm, timelocal
 
 	sub new{
 		my $class = shift;
@@ -211,6 +213,7 @@ sub syntaxCheck{
 			'stream_out'    => $params->{'stream-out'},
 			'socket'        => undef,
 			'timestamp'     => $params->{'timestamp'},
+			'timestamp-local' => $params->{'timestamp-local'},
 			'token'         => undef,
 			'username'      => $params->{'username'},
 			'verbose'       => $params->{'verbose'},
@@ -329,7 +332,10 @@ sub syntaxCheck{
 				$self->msg(0, 'could not find trackinfos', 'error');
 			if(defined $trackinfos){
 				# set timestamp to (now - album_length)
-				my $timestamp = $self->get_time_unix($self->{'timestamp'}) // time;
+				my $timestamp = $self->get_time_unix($self->{'timestamp'}) //
+					$self->get_time_unix($self->{'timestamp-local'}, 'local') // time;
+				$self->msg(1, 'set timestamp (of album end) to ' 
+					. $self->get_time_iso_($timestamp));
 				for my $t(@$trackinfos){
 					$timestamp -= $t->{'duration'};
 				}
@@ -551,8 +557,8 @@ sub syntaxCheck{
 				my $bytes_rec = $stats->{'info_bytes'} + $stats->{'music_bytes'};
 				my $scrobbled =()= grep {$_->{'scrobbled'}} @{$stats->{'played'}};
 				$self->msg(1, '-'x72); 
-				$self->msg(1, sprintf('playing since %s (%us)', 
-						'' . localtime($stats->{'start_time'}), 
+				$self->msg(1, sprintf('playing since %s UTC (%us)', 
+						'' . gmtime($stats->{'start_time'}), 
 						$time_playing,
 					)
 				);
@@ -800,7 +806,7 @@ sub syntaxCheck{
 	sub get_time_iso{
 		my $self = shift;
 		my $unixtimestamp = shift // time();
-		return strftime("%Y-%m-%d%H:%M:%S", gmtime($unixtimestamp));
+		return strftime("%Y-%m-%dT%H:%M:%S", gmtime($unixtimestamp));
 	}
 
 	sub get_time_iso_{
@@ -812,6 +818,7 @@ sub syntaxCheck{
 	sub get_time_unix{
 		my $self = shift;
 		my $iso_timestamp = shift;
+		my $local = shift;
 		my $unix_timestamp;
 		if(defined($iso_timestamp) && $iso_timestamp =~/^
 			(?<year>[0-9]{4})-?
@@ -821,7 +828,9 @@ sub syntaxCheck{
 			(?<min>[0-9]{2}):?
 			(?<sec>[0-9]{2}|)
 			$/x){
-			$unix_timestamp = timegm(
+			$unix_timestamp = defined($local) ? timelocal(
+				$+{'sec'}, $+{'min'}, $+{'hour'}, $+{'mday'}, $+{'month'}-1, $+{'year'})
+			: timegm(
 				$+{'sec'}, $+{'min'}, $+{'hour'}, $+{'mday'}, $+{'month'}-1, $+{'year'});
 		}
 		return $unix_timestamp;
@@ -1169,6 +1178,7 @@ my $lfm_dl = Lastfm_dl->new({
 		'password-file'   => $params->{'password-file'},
 		'stream-out'      => $params->{'stream-out'},
 		'timestamp'       => $params->{'timestamp'},
+		'timestamp-local' => $params->{'timestamp-local'},
 		'username'        => $params->{'user'},
 		'verbose'         => $params->{'verbose'},
 	}
