@@ -423,7 +423,7 @@ sub syntaxCheck{
 	sub stream_parse_icy_info{
 		my $self = shift;
 		my $str  = shift;
-		if($str =~ /^StreamTitle='(?:NEXT: ?)?(.*) - (.*)';StreamUrl='';/){
+		if($str =~ /^StreamTitle='(?:NEXT: ?)?(.*) - (.*)';(?:StreamUrl='|$)/){
 			return {
 				'artist' => $1,
 				'track'  => $2,
@@ -483,6 +483,7 @@ sub syntaxCheck{
 							if($info =~ /\S/){
 								my $current_track = $self->stream_parse_icy_info($info);
 								if(ref $current_track eq 'HASH'){
+									$current_track->{'chosenByUser'} = '0';
 									if($last_track{'artist'} ne $current_track->{'artist'} ||
 										$last_track{'track'} ne $current_track->{'track'}){
 										if($state eq 'scrobble'){
@@ -631,14 +632,19 @@ sub syntaxCheck{
 			'timeout'    => 10, 
 			'agent'      => 'dl_lfm v' . $::VERSION,
 		);
-		my $response = $http_method eq 'GET' ? $lwp->get($url, %$more)
-			: $lwp->post($url, %$more);
+		my $response = 
+			$http_method eq 'HEAD' ? $lwp->head($url, %$more) :
+			$http_method eq 'POST' ? $lwp->post($url, %$more) : $lwp->get($url, %$more);
 		unless($response->is_success){
 			$self->msg(0, $response->status_line, 'error');
 		}
-		my $content = $response->decoded_content;
-		$self->msg(2, "status = " . $response->code);
-		return ($response->code, $content);
+		if($http_method eq 'HEAD'){
+			return ($response->code, $response);
+		}else{
+			my $content = $response->decoded_content;
+			$self->msg(2, "status = " . $response->code);
+			return ($response->code, $content);
+		}
 	}
 
 	sub get_lastfm{
@@ -810,10 +816,10 @@ sub syntaxCheck{
 		if(defined($iso_timestamp) && $iso_timestamp =~/^
 			(?<year>[0-9]{4})-?
 			(?<month>[0-9]{2})-?
-			(?<mday>[0-9]{2})T?
+			(?<mday>[0-9]{2})[T ]?
 			(?<hour>[0-9]{2}):?
 			(?<min>[0-9]{2}):?
-			(?<sec>[0-9]{2})
+			(?<sec>[0-9]{2}|)
 			$/x){
 			$unix_timestamp = timegm(
 				$+{'sec'}, $+{'min'}, $+{'hour'}, $+{'mday'}, $+{'month'}-1, $+{'year'});
@@ -1038,6 +1044,7 @@ sub syntaxCheck{
 				}, 1, 'POST'
 			);
 			# parse response for acceptance and corrections
+			$self->msg(3, Dumper($json));
 			my $sc = $now_playing ? $json->{'nowplaying'} : $json->{'scrobbles'};
 			if(defined $sc){
 				unless(defined $now_playing){
@@ -1060,7 +1067,6 @@ sub syntaxCheck{
 				$self->msg(0, ($now_playing ? 'updating "now playing"' : 'scrobbling') 
 					. ' seemed to have failed.', 'warning');
 			}
-			$self->msg(4, Dumper($json));
 		}else{
 			$self->msg(0, 'could not ' 
 				. ($now_playing ? 'update "now playing"' : 'scrobble')
@@ -1082,15 +1088,17 @@ sub syntaxCheck{
 			if(-e $source){ # treat files as a json source
 				$scrobble_data = $self->load_json_file($source);
 			}elsif($source =~ /^https?:\/\//){
-				if($source =~ /^https?:\/\/(?:[a-z0-9_]+\.)?bandcamp\.com\//){
+				if($source =~ /^https?:\/\/(?:[a-z0-9_-]+\.)?bandcamp\.com\//){
 					# bandcamp album page
 					$scrobble_data = {
 						'tracks' => $self->bandcamp_collect_trackinfos($source)
 					};
 				}else{
 					# radio stream
-					my $playlist = $self->get_http_content($source);
-					my @sources = ($playlist =~ /File.=(.*)/g);
+					my $response = $self->get_http_content($source, 'HEAD');
+					my $playlist = ($response->code == 200) ?
+						$self->get_http_content($source) : '';
+					my @sources = ($playlist =~ /File[0-9]+=\s*(https?:\/\/.*)/g);
 					@sources = ($source) if @sources == 0;
 					$self->msg(2, 'found following ressources: ' . Dumper(\@sources));
 					my ($stream, $icy_metaint);
