@@ -1028,15 +1028,45 @@ sub syntaxCheck{
 		my $self        = shift;
 		my $track_hash  = shift;
 		my $now_playing = shift;
+		my $die_after_scrobbling = 0;
 		if($track_hash->{'artist'} and $track_hash->{'track'}){
 			unless(defined $self->get_mobile_session()){
 				$self->msg(0, 'could not get a session key', 'error');
 				die;
 			}
-			my $type = $now_playing ? 'updating "now playing" with' : 'scrobbling';
-			$self->msg(1, 
-				"$type track '$track_hash->{'artist'}' -- '$track_hash->{'track'}'");
 			$track_hash->{'timestamp'} = time unless defined $track_hash->{'timestamp'};
+			if(defined $track_hash->{'duration'}){
+				if($track_hash->{'duration'} == 0){
+					$self->msg(0, 'duration of track is 0. this will lead to errors in ' 
+						. 'scrobbling. quitting after this scrobbling', 'error');
+					delete $track_hash->{'duration'};
+					$die_after_scrobbling = 1;
+				}elsif($track_hash->{'duration'} <= 30){
+					$self->msg(0, 'duration of track is smaller than 30 seconds and thus '
+						. 'would not be scrobbled by last.fm. so I\'m deleting the information '
+						. 'about the duration', 'warning');
+					delete $track_hash->{'duration'};
+				}
+			}
+			if($track_hash->{'track'} =~ /^[Uu]nknown$/){
+				$track_hash->{'track'} .= ' (sic!)';
+			}
+			# print info on track
+			my $info_string = $now_playing ? 'updating "now playing" with' : 'scrobbling';
+			$info_string .= " track " 
+				. "'$track_hash->{'artist'}' -- '$track_hash->{'track'}'";
+			if(defined $track_hash->{'trackNumber'} and defined $track_hash->{'album'}){
+				$info_string .= " ($track_hash->{'trackNumber'} " 
+				. "on '$track_hash->{'album'}')";
+			}
+			if(defined $track_hash->{'duration'}){
+				$info_string .= " $track_hash->{'duration'}s";
+			}
+			if(defined $track_hash->{'timestamp'}){
+				$info_string .= ' at ' . $self->get_time_iso_($track_hash->{'timestamp'}) . ' UTC';
+			}
+			$self->msg(1, $info_string);
+			# scrobble
 			my $json = $self->get_lastfm({
 					'method' => ($now_playing ? 'track.updatenowplaying' : 'track.scrobble'),
 					'sk' => $self->{'session_key'},
@@ -1071,6 +1101,10 @@ sub syntaxCheck{
 			$self->msg(0, 'could not ' 
 				. ($now_playing ? 'update "now playing"' : 'scrobble')
 				. '. artist or track name missing', 'warning');
+		}
+		if($die_after_scrobbling){
+			$self->msg(1, 'exiting because of previous error');
+			exit 1;
 		}
 		return 1;
 	}
@@ -1131,12 +1165,12 @@ sub syntaxCheck{
 # main
 my $params = syntaxCheck(@ARGV);
 my $lfm_dl = Lastfm_dl->new({
-		'password'      => $params->{'password'},
-		'password-file' => $params->{'password-file'},
-		'stream-out'    => $params->{'stream-out'},
-		'timestamp'     => $params->{'timestamp'},
-		'username'      => $params->{'user'},
-		'verbose'       => $params->{'verbose'},
+		'password'        => $params->{'password'},
+		'password-file'   => $params->{'password-file'},
+		'stream-out'      => $params->{'stream-out'},
+		'timestamp'       => $params->{'timestamp'},
+		'username'        => $params->{'user'},
+		'verbose'         => $params->{'verbose'},
 	}
 );
 #$lfm_dl->authenticate;
