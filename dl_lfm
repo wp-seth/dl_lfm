@@ -1043,7 +1043,16 @@ sub syntaxCheck{
 				$self->msg(0, 'could not get a session key', 'error');
 				die;
 			}
-			$track_hash->{'timestamp'} = time unless defined $track_hash->{'timestamp'};
+			if(defined $track_hash->{'timestamp'}){
+				# cope with iso time format
+				if($track_hash->{'timestamp'} =~ 
+					/^[0-9]{4}(?:-[0-9]{2}){2}[ T](?:[0-9]{2}:?){2}[0-9]{2}$/){
+					$track_hash->{'timestamp'} = 
+						$self->get_time_unix($track_hash->{'timestamp'});
+				}
+			}else{
+				$track_hash->{'timestamp'} = time;
+			}
 			if(defined $track_hash->{'duration'}){
 				if($track_hash->{'duration'} == 0){
 					$self->msg(0, 'duration of track is 0. this will lead to errors in ' 
