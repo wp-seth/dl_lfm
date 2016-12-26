@@ -12,7 +12,7 @@ use Getopt::Long qw(:config bundling);
 use Pod::Usage;
 use POSIX qw/strftime/;       # format timestamp
 
-$main::VERSION = '0.5';
+$main::VERSION = '0.6';
 binmode STDOUT, ":utf8";
 
 # functions
@@ -31,8 +31,13 @@ binmode STDOUT, ":utf8";
 # sub authenticate
 #		unused: last.fm authentication
 #
-#	sub bandcamp_collect_trackinfos
+#	sub collect_trackinfos_bandcamp
 #		given an url to a bandcamp album, this function returns information on 
+#		album title, tracks (number, title, duration) and artist in a last.fm
+#		compatible format
+#
+#	sub collect_trackinfos_youtube
+#		given an url to a youtube album, this function tries to return information on 
 #		album title, tracks (number, title, duration) and artist in a last.fm
 #		compatible format
 #
@@ -144,6 +149,7 @@ sub syntaxCheck{
 		'timestamp'     => undef, # timestamp in utc for scrobbling
 		'timestamp-local' => undef, # timestamp in local time for scrobbling
 		'stream-out'    => '| vlc -', # the destination for streaming data
+		'test'          => undef, # testing only
 		'user'          => undef, # user-name
 		'verbose'       => 1,     # trace; grade of verbosity
 		'version'       => 0,     # diplay version and exit
@@ -156,6 +162,7 @@ sub syntaxCheck{
 		"stream-out=s",
 		"timestamp=s",
 		"timestamp-local=s",
+		"test|t",
 		"user|u=s",
 		"silent|quiet|q" => sub { $params{'verbose'} = 0;},
 		"very-verbose" => sub { $params{'verbose'} = 2;},
@@ -212,6 +219,7 @@ sub syntaxCheck{
 			'session_key'   => undef,
 			'stream_out'    => $params->{'stream-out'},
 			'socket'        => undef,
+			'simulate'      => $params->{'test'},
 			'timestamp'     => $params->{'timestamp'},
 			'timestamp-local' => $params->{'timestamp-local'},
 			'token'         => undef,
@@ -307,11 +315,11 @@ sub syntaxCheck{
 		$self->get_token unless defined $self->{'token'};
 		my $auth_url = 'https://www.last.fm/api/auth/?api_key=' . $self->{'api_key'} 
 			. '&token=' . $self->{'token'};
-		my ($http_code, $response) = $self->get_http_content($auth_url);
+		my ($http_code, $content) = $self->get_http_content($auth_url);
 		return 1;
 	}
 
-	sub bandcamp_collect_trackinfos{
+	sub collect_trackinfos_bandcamp{
 		my $self = shift;
 		my $url = shift;
 		$self->msg(1, 'reading bandcamp album page');
@@ -356,6 +364,70 @@ sub syntaxCheck{
 			}
 		}else{
 			$self->msg(0, 'could not find album data', 'error');
+		}
+		return $last_fm_struct;
+	}
+
+	sub collect_trackinfos_youtube{
+		my $self = shift;
+		my $url = shift;
+		$self->msg(1, 'reading youtube album page');
+		# tested with https://www.youtube.com/watch?v=BfZ37gpeY7A
+		my ($http_status, $content) = $self->get_http_content($url);
+		my $last_fm_struct = [];
+		if($content =~ /<title>(.*?) - (.*?) (?i:[(\[]?full album[)\]]? )?- YouTube<\/title>/){
+			my $artist = $1;
+			my $album_title = $2;
+			if($content =~ /<p id="eow-description"[^>]*>(.*)/){
+				my @description = split /<br \/>/, $1;
+				my $trackinfos;
+				my $counter = 1;
+				for my $line(@description){
+					$line =~s /<a [^>]+>|<\/a>//g;
+					if($line =~ /^(?i:track |)0?$counter[.: ]*"([^"]+)" \s*([0-9]{1,2}[:.][0-9]{2})/){
+						my $duration = $self->get_time_mm_ss2s($2) // 0;
+						if($counter > 1){
+							$trackinfos->[-1]{'duration'} = $duration - $trackinfos->[-1]{'duration'};
+						}
+						push @$trackinfos, {
+							'track' => $1,
+							'trackNumber' => $counter,
+							'duration' => $duration,
+						};
+						++$counter;
+					}else{
+						$self->msg(2, 'could not find tracks yet', 'warning');
+					}
+				}
+				# get complete video length
+				$trackinfos->[-1]{'duration'} = 
+					$self->youtube_get_video_length($url) - $trackinfos->[-1]{'duration'};
+				$self->msg(2, Dumper($trackinfos));
+				# set timestamp to (now - album_length)
+				my $timestamp = $self->get_time_unix($self->{'timestamp'}) //
+					$self->get_time_unix($self->{'timestamp-local'}, 'local') // time;
+				$self->msg(1, 'set timestamp (of album end) to ' 
+					. $self->get_time_iso_($timestamp));
+				for my $t(@$trackinfos){
+					$timestamp -= $t->{'duration'};
+				}
+				for my $t(@$trackinfos){
+					push @$last_fm_struct, {
+						'artist' => $artist,
+						'track' => $t->{'track'},
+						'timestamp' => int($timestamp + .5), 
+						'album' => $album_title,
+						'chosenByUser' => '1',
+						'trackNumber' => $t->{'trackNumber'},
+						'duration' => $t->{'duration'},
+					};
+					$timestamp += $t->{'duration'};
+				}
+			}else{
+				$self->msg(0, 'could not find trackinfos', 'error');
+			}
+		}else{
+			$self->msg(0, 'could not find artist or album title', 'error');
 		}
 		return $last_fm_struct;
 	}
@@ -815,6 +887,16 @@ sub syntaxCheck{
 		return strftime("%Y-%m-%d %H:%M:%S", gmtime($unixtimestamp));
 	}
 
+	sub get_time_mm_ss2s{
+		my $self = shift;
+		my $mm_ss = shift;
+		if($mm_ss =~ /^([0-9]+):([0-9]{2}(?:\.[0-9]+)?)$/){
+			return $1 * 60 + $2;
+		}else{
+			return undef;
+		}
+	}
+
 	sub get_time_unix{
 		my $self = shift;
 		my $iso_timestamp = shift;
@@ -1085,35 +1167,39 @@ sub syntaxCheck{
 			}
 			$self->msg(1, $info_string);
 			# scrobble
-			my $json = $self->get_lastfm({
-					'method' => ($now_playing ? 'track.updatenowplaying' : 'track.scrobble'),
-					'sk' => $self->{'session_key'},
-					%$track_hash,
-				}, 1, 'POST'
-			);
-			# parse response for acceptance and corrections
-			$self->msg(3, Dumper($json));
-			my $sc = $now_playing ? $json->{'nowplaying'} : $json->{'scrobbles'};
-			if(defined $sc){
-				unless(defined $now_playing){
-					unless(defined $sc->{'@attr'}{'accepted'} 
-						&& $sc->{'@attr'}{'accepted'} == 1){
-						$self->msg(0, 'scrobble data were not accepted', 'warning');
-					}
-					unless(defined $sc->{'@attr'}{'ignored'}
-						&& $sc->{'@attr'}{'ignored'} == 0){
-						$self->msg(0, 'scrobble data were ignored', 'warning');
-					}
-					$sc = $sc->{'scrobble'};
-				}
-				for my $field('album', 'artist', 'track'){
-					if(defined $sc->{$field}{'corrected'} && $sc->{$field}{'corrected'} == 1){
-						$self->msg(1, "field '$field' corrected to '$sc->{$field}{'#text'}'");
-					}
-				}
+			if($self->{'simulate'}){
+				$self->msg(2, 'simulation only');
 			}else{
-				$self->msg(0, ($now_playing ? 'updating "now playing"' : 'scrobbling') 
-					. ' seemed to have failed.', 'warning');
+				my $json = $self->get_lastfm({
+						'method' => ($now_playing ? 'track.updatenowplaying' : 'track.scrobble'),
+						'sk' => $self->{'session_key'},
+						%$track_hash,
+					}, 1, 'POST'
+				);
+				# parse response for acceptance and corrections
+				$self->msg(3, Dumper($json));
+				my $sc = $now_playing ? $json->{'nowplaying'} : $json->{'scrobbles'};
+				if(defined $sc){
+					unless(defined $now_playing){
+						unless(defined $sc->{'@attr'}{'accepted'} 
+							&& $sc->{'@attr'}{'accepted'} == 1){
+							$self->msg(0, 'scrobble data were not accepted', 'warning');
+						}
+						unless(defined $sc->{'@attr'}{'ignored'}
+							&& $sc->{'@attr'}{'ignored'} == 0){
+							$self->msg(0, 'scrobble data were ignored', 'warning');
+						}
+						$sc = $sc->{'scrobble'};
+					}
+					for my $field('album', 'artist', 'track'){
+						if(defined $sc->{$field}{'corrected'} && $sc->{$field}{'corrected'} == 1){
+							$self->msg(1, "field '$field' corrected to '$sc->{$field}{'#text'}'");
+						}
+					}
+				}else{
+					$self->msg(0, ($now_playing ? 'updating "now playing"' : 'scrobbling') 
+						. ' seemed to have failed.', 'warning');
+				}
 			}
 		}else{
 			$self->msg(0, 'could not ' 
@@ -1132,8 +1218,12 @@ sub syntaxCheck{
 		my $source = shift;
 		if($source =~ /^star\s*fm\s*berlin$/i){
 			$source = 'https://berlin.starfm.de/player/pls/berlin_pls_mp3.php';
+		}elsif($source =~ /^star\s*fm\s*alternative$/i){
+			$source = 'https://berlin.starfm.de/player/pls/alternative_pls_mp3.php';
 		}elsif($source =~ /^star\s*fm\s*from\s*hell$/i){
 			$source = 'https://berlin.starfm.de/player/pls/from_hell_pls_mp3.php';
+		}elsif($source =~ /^star\s*fm\s*(?:rock\s*classics|classic\s*rock)$/i){
+			$source = 'https://berlin.starfm.de/player/pls/classic_rock_pls_mp3.php';
 		}
 		my $scrobble_data;
 		if(defined $source){
@@ -1143,7 +1233,12 @@ sub syntaxCheck{
 				if($source =~ /^https?:\/\/(?:[a-z0-9_-]+\.)?bandcamp\.com\//){
 					# bandcamp album page
 					$scrobble_data = {
-						'tracks' => $self->bandcamp_collect_trackinfos($source)
+						'tracks' => $self->collect_trackinfos_bandcamp($source)
+					};
+				}elsif($source =~ /^https?:\/\/(?:www+\.)?youtube\.com\//){
+					# youtube album page (experimental)
+					$scrobble_data = {
+						'tracks' => $self->collect_trackinfos_youtube($source)
 					};
 				}else{
 					# radio stream
@@ -1178,6 +1273,34 @@ sub syntaxCheck{
 		return 1;
 	}
 
+	sub youtube_get_video_length{
+		my $self = shift;
+		my $url  = shift;
+		my $api_key = 'AIzaSyBSTDQ1Y6eM9Ci8hMdRo8nLbnISc6eopC4';
+		my $length;
+		# extract youtube video id
+		if($url =~ /youtube\.com\/watch\?v=([a-zA-Z0-9]+)/ or $url =~ /youtube\.com\/v\/([a-zA-Z0-9]+)/){
+			my $id = $1;
+			my $content = $self->get_http_content(
+				'https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=' 
+				. $id . '&key=' . $api_key);
+			$content = JSON::from_json($content);
+			if(defined $content->{'items'}[0]{'contentDetails'}{'duration'}){
+				$length = $content->{'items'}[0]{'contentDetails'}{'duration'};
+				if($length =~ /^PT(?:([0-9]+)H|)(?:([0-9]+)M|)(?:([0-9]+)S|)$/){
+					$length = ($1 // 0) * 60 * 60 + ($2 // 0) * 60 + ($3 // 0);
+				}else{
+					$self->msg(0, 'could not extract youtube video length', 'error');
+				}
+			}else{
+				$self->msg(0, 'could not get youtube video information', 'error');
+			}
+		}else{
+			$self->msg(0, 'could not extract youtube video id', 'error');
+		}
+		return $length;
+	}
+
 }
 
 # main
@@ -1186,6 +1309,7 @@ my $lfm_dl = Lastfm_dl->new({
 		'password'        => $params->{'password'},
 		'password-file'   => $params->{'password-file'},
 		'stream-out'      => $params->{'stream-out'},
+		'test'            => $params->{'test'},
 		'timestamp'       => $params->{'timestamp'},
 		'timestamp-local' => $params->{'timestamp-local'},
 		'username'        => $params->{'user'},
@@ -1231,7 +1355,7 @@ dl_lfm [options]
       --stream-out=dest       use this destination to send the stream to 
                                (if scrobbling from stream), default = '| vlc -'
   -u, --user=string           username
-  -t, --test                  don't download anything
+  -t, --test                  don't scrobble anything, simulate only
 
 meta:
 
@@ -1306,7 +1430,7 @@ use this last.fm username, e.g. for B<--dl>
 
 =item B<--test>, B<-t>
 
-don't download anything
+don't scrobble anything, but simulate only
 
 =item B<--version>, B<-V>
 
