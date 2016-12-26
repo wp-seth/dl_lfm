@@ -815,63 +815,65 @@ sub syntaxCheck{
 
 	sub get_mobile_session{
 		my $self = shift;
-		unless(defined $self->{'token'}){
-			if(!$self->get_token(1)){
-				$self->msg(0, 'could not get a token', 'error');
-				die;
-			}
-		}
-		# credentials
-		# if user name is not defined, let user type in last.fm user name
-		if(not defined $self->{'username'}){
-			$self->msg(1, "enter last.fm username:");
-			$self->{'username'} = <STDIN>;
-			chomp($self->{'username'});
-		}
-		$self->msg(2, "last.fm login user name is '$self->{'username'}'.");
-		# if user password is not defined, search typical password places or let 
-		# user type in user password
-		if(not defined $self->{'password'}){
-			my $pwfile = [$self->{'password_file'}];
-			for(@$pwfile){
-				if(-e $_){
-					$self->msg(1, "using password file '$_'");
-					open(my $INFILE, '<', $_) or die $!;
-						chomp($self->{'password'} = <$INFILE>);
-					close($INFILE);
-					last;
+		unless(defined $self->{'session_key'}){
+			unless(defined $self->{'token'}){
+				if(!$self->get_token(1)){
+					$self->msg(0, 'could not get a token', 'error');
+					die;
 				}
 			}
-			unless(defined $self->{'password'}){
-				if($self->{'verbose'} >= 1){
-					$self->msg(1, 'could not read password file at places: ');
-					print '  ' . $pwfile->[$_] . ', ' for 0..($#$pwfile-1);
-					print $pwfile->[-1] . "\n";
+			# credentials
+			# if user name is not defined, let user type in last.fm user name
+			if(not defined $self->{'username'}){
+				$self->msg(1, "enter last.fm username:");
+				$self->{'username'} = <STDIN>;
+				chomp($self->{'username'});
+			}
+			$self->msg(2, "last.fm login user name is '$self->{'username'}'.");
+			# if user password is not defined, search typical password places or let 
+			# user type in user password
+			if(not defined $self->{'password'}){
+				my $pwfile = [$self->{'password_file'}];
+				for(@$pwfile){
+					if(-e $_){
+						$self->msg(1, "using password file '$_'");
+						open(my $INFILE, '<', $_) or die $!;
+							chomp($self->{'password'} = <$INFILE>);
+						close($INFILE);
+						last;
+					}
 				}
-				$self->msg(0, "enter password (will not be echoed):");
-				ReadMode('raw') if defined &ReadMode;
-				$self->{'password'} = ReadLine(0) if defined &ReadLine;
-				chomp($self->{'password'});
-				ReadMode('restore') if defined &ReadMode;
-				while($self->{'password'} =~ /\x{007f}/){
-					$self->{'password'} =~ s/(?:^|[^\x{007f}])\x{007f}//g;
+				unless(defined $self->{'password'}){
+					if($self->{'verbose'} >= 1){
+						$self->msg(1, 'could not read password file at places: ');
+						print '  ' . $pwfile->[$_] . ', ' for 0..($#$pwfile-1);
+						print $pwfile->[-1] . "\n";
+					}
+					$self->msg(0, "enter password (will not be echoed):");
+					ReadMode('raw') if defined &ReadMode;
+					$self->{'password'} = ReadLine(0) if defined &ReadLine;
+					chomp($self->{'password'});
+					ReadMode('restore') if defined &ReadMode;
+					while($self->{'password'} =~ /\x{007f}/){
+						$self->{'password'} =~ s/(?:^|[^\x{007f}])\x{007f}//g;
+					}
 				}
 			}
+			if(defined $self->{'username'} and defined $self->{'password'}){
+				# login
+				my $json = $self->get_lastfm({
+						'username' => $self->{'username'},
+						'password' => $self->{'password'},
+						'method'   => 'auth.getMobileSession',
+						'token'    => $self->{token},
+					}, 1, 'POST'
+				);
+				$self->{'session_key'} = $json->{'session'}{'key'};
+			}else{
+				$self->msg(0, 'could not login; missing username or password', 'error')
+			}
+			$self->{'token'} = undef unless defined $self->{'session_key'};
 		}
-		if(defined $self->{'username'} and defined $self->{'password'}){
-			# login
-			my $json = $self->get_lastfm({
-					'username' => $self->{'username'},
-					'password' => $self->{'password'},
-					'method'   => 'auth.getMobileSession',
-					'token'    => $self->{token},
-				}, 1, 'POST'
-			);
-			$self->{'session_key'} = $json->{'session'}{'key'};
-		}else{
-			$self->msg(0, 'could not login; missing username or password', 'error')
-		}
-		$self->{'token'} = undef unless defined $self->{'session_key'};
 		return $self->{'session_key'};
 	}
 
