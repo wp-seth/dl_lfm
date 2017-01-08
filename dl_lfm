@@ -375,6 +375,7 @@ sub syntaxCheck{
 		# tested with https://www.youtube.com/watch?v=BfZ37gpeY7A
 		my ($http_status, $content) = $self->get_http_content($url);
 		my $last_fm_struct = [];
+		# alternative could be using https://www.googleapis.com/youtube/v3/videos?part=snippet&id=...&key=AIzaSyBSTDQ1Y6eM9Ci8hMdRo8nLbnISc6eopC4
 		if($content =~ /<title>(.*?) - (.*?) (?i:[(\[]?full album[)\]]? )?- YouTube<\/title>/){
 			my $artist = $1;
 			my $album_title = $2;
@@ -1264,7 +1265,7 @@ sub syntaxCheck{
 						' or could not connect to it.', 'error');
 				}
 			}else{
-				$self->msg(0, 'could not read source, see --help for more info', 'error');
+				$self->msg(0, 'could not read source, use param --help for more info', 'error');
 			}
 		}
 		if(defined $scrobble_data){
@@ -1289,8 +1290,8 @@ sub syntaxCheck{
 			$content = JSON::from_json($content);
 			if(defined $content->{'items'}[0]{'contentDetails'}{'duration'}){
 				$length = $content->{'items'}[0]{'contentDetails'}{'duration'};
-				if($length =~ /^PT(?:([0-9]+)H|)(?:([0-9]+)M|)(?:([0-9]+)S|)$/){
-					$length = ($1 // 0) * 60 * 60 + ($2 // 0) * 60 + ($3 // 0);
+				if($length =~ /^P(?:([0-9]+D|))T(?:([0-9]+)H|)(?:([0-9]+)M|)(?:([0-9]+)S|)$/){
+					$length = ((($1 // 0) * 24 + ($2 // 0)) * 60 + ($3 // 0)) * 60 + ($4 // 0);
 				}else{
 					$self->msg(0, 'could not extract youtube video length', 'error');
 				}
