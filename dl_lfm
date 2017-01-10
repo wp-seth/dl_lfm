@@ -41,22 +41,6 @@ binmode STDOUT, ":utf8";
 #		album title, tracks (number, title, duration) and artist in a last.fm
 #		compatible format
 #
-#	sub stream_connect
-#		given an url, connect to a http(s)-shoutcast-stream; 
-#		return socket and icy-metadata
-#
-#	sub stream_parse_icy_info
-#		given a icy info string, try to get artist and title
-#
-#	sub stream_read_current_track
-#		after stream_connect, this function reads the stream from the socket.
-#		forwards the pure music stream (w/o icy info) to a given process (like vlc) or
-#		a file.
-#		the icy info is used to scrobble the track into a given last.fm profile.
-#
-#	sub stream_scrobble_user_interface
-#		a simple user interface can be used to skip/stop scrobbling when using a stream
-#
 #	sub get_all_user_data
 #		get all important user statistics from last.fm for a given user and save it to 
 #		a json file.
@@ -110,6 +94,22 @@ binmode STDOUT, ":utf8";
 # sub scrobble
 #		scrobble a given track to the current last.fm profile or update the 
 #		"now playing" track
+#
+#	sub stream_connect
+#		given an url, connect to a http(s)-shoutcast-stream; 
+#		return socket and icy-metadata
+#
+#	sub stream_parse_icy_info
+#		given a icy info string, try to get artist and title
+#
+#	sub stream_read_current_track
+#		after stream_connect, this function reads the stream from the socket.
+#		forwards the pure music stream (w/o icy info) to a given process (like vlc) or
+#		a file.
+#		the icy info is used to scrobble the track into a given last.fm profile.
+#
+#	sub stream_scrobble_user_interface
+#		a simple user interface can be used to skip/stop scrobbling when using a stream
 #
 # sub scrobble_from_source
 #		handle different kind of music sources:	
@@ -431,237 +431,6 @@ sub syntaxCheck{
 			$self->msg(0, 'could not find artist or album title', 'error');
 		}
 		return $last_fm_struct;
-	}
-
-	sub stream_connect{
-		my $self = shift;
-		my $url = shift;
-		my $socket;
-		my $icy_metaint;
-		if($url =~ /https?:\/\/([^:\/]*)(?:\:(\d+))?(?:\/(.*))?/){
-			my $host = $1;
-			my $port = $2 // 80;
-			my $file = '/' . ($3 // '');
-			$self->msg(1, "connecting to $host:$port");
-			$socket = IO::Socket::INET->new(
-				PeerHost => $host,
-				PeerPort => $port,
-				Proto => 'tcp',
-			);
-			if($socket){
-				$self->{'socket'} = $socket;
-				$self->msg(1, "requesting '$file'");
-				my $send_header = 
-					"GET $file HTTP/1.0\n" .
-					"Icy-MetaData:1\n\n" .
-					"Accept: */*\n" .
-					"User-Agent: dl_lfm v$::VERSION\n\n";
-				$self->msg(2, "sending header: $send_header");
-				$socket->send($send_header);
-				$self->msg(2, "waiting for reply");
-				my $header = <$socket>;
-				chomp($header);
-				unless($header =~ /200|OK/){
-					$self->msg(1, "header = $header");
-					$self->msg(0, 'reading of stream header failed.', 'warning');
-					return (undef, undef);
-				}
-				$self->msg(2, $header);
-				my %icy_info = ();
-				while($header = <$socket>){
-					$header =~ s/[\r\n]+$//;
-					$icy_info{'content-type'} = $1 if $header =~ /^Content-Type:(.+)/;
-					$icy_info{'bitrate'} = $1      if $header =~ /^icy-br:([0-9]+)/;
-					$icy_info{'genre'} = $1        if $header =~ /^icy-genre:(.+)/;
-					$icy_info{'radio'} = $1        if $header =~ /^icy-name:(.+)/;
-					$icy_info{'url'} = $1          if $header =~ /^icy-url:(.+)/;
-					if($header =~ /^icy-metaint:([0-9]+)/){
-						$icy_metaint = $1;
-					}
-					$self->msg(3, "header: $header");
-					last unless $header =~ /\S/;
-				}
-				if(keys(%icy_info) > 0){ # print some information
-					$self->msg(1, 'radio: ' . ($icy_info{'radio'} // 'unknown') . ' from ' 
-						. ($icy_info{'url'} // 'unknown'));
-					$self->msg(1, 'audio type: ' . ($icy_info{'content-type'} // 'unknown') 
-						. ' with bitrate ' . ($icy_info{'bitrate'} // 'unknown'));
-					$self->msg(1, 'genre: ' . ($icy_info{'genre'} // 'unknown'));
-				}
-				defined $icy_metaint or $self->msg(0, 'no icy meta intervall found', 
-					'warning');
-			}else{
-				$self->msg(1, "socket creation failed: $!", 'notice');
-			}
-		}else{
-			$self->msg(2, "could not read url", 'notice');
-		}
-		return ($socket, $icy_metaint);
-	}
-
-	sub stream_parse_icy_info{
-		my $self = shift;
-		my $str  = shift;
-		if($str =~ /^StreamTitle='(?:NEXT: ?)?(.*) - (.*)';(?:StreamUrl='|$)/){
-			return {
-				'artist' => $1,
-				'track'  => $2,
-			}
-		}else{
-			return $str;
-		}
-	}
-
-	sub stream_read_current_track{
-		my $self        = shift;
-		my $icy_metaint = shift;
-		# out file or stream, e.g. '>test.mp3' or '| vlc -'
-		my $outstream   = $self->{'stream_out'} // '| vlc -'; 
-		my $content; 
-		my $byte_count = 0; 
-		my $byte_inc_default = 1024; 
-		my $byte_inc = (defined($icy_metaint) && $byte_inc_default >= $icy_metaint)
-			? $icy_metaint : $byte_inc_default; 
-		my $info = '';
-		open(HANDLER, $outstream) 
-			or die "error: cannot pipe input to '" . substr($outstream, 1) . "': $!\n";
-		$self->msg(1, "redirecting HTTP filestream to '$outstream'");
-		my %last_track = ('artist' => '', 'track' => '');
-		my $socket = $self->{'socket'};
-		unless(defined $socket){
-			$self->msg(0, 'socket not defined. did you call stream_connect already?', 'error');
-			return 0;
-		}
-		$SIG{'CHLD'} = 'IGNORE'; # avoid creating zombies with fork
-		my $state = 'scrobble';
-		ReadMode('cbreak') if defined &ReadMode;
-		my %stats = ( # used for statistics on stream
-			'info_bytes'  => 0,
-			'music_bytes' => 0,
-			'played'      => [],
-			'start_time'  => time(),
-		); 
-		while($socket->read($content, $byte_inc)){
-			$stats{'music_bytes'} += $byte_inc;
-			#printf "read %d, %d\n", length($content), $byte_inc;
-			$state = $self->stream_scrobble_user_interface(\%last_track, $state, \%stats);
-			print HANDLER $content;
-			if(defined $icy_metaint){
-				$byte_count += $byte_inc;
-				if($byte_count == $icy_metaint){
-					$socket->read($content, 1);
-					++$stats{'info_bytes'};
-					my $length = 16 * ord($content);
-					if($length > 0){
-						$socket->read($content, $length);
-						$stats{'info_bytes'} += $length;
-						$content =~ s/\s+$//;
-						$self->msg(4, $content);
-						if($content ne $info){
-							$info = $content;
-							if($info =~ /\S/){
-								my $current_track = $self->stream_parse_icy_info($info);
-								if(ref $current_track eq 'HASH'){
-									$current_track->{'chosenByUser'} = '0';
-									if($last_track{'artist'} ne $current_track->{'artist'} ||
-										$last_track{'track'} ne $current_track->{'track'}){
-										if($state eq 'scrobble'){
-											if($self->scrobble_forked(\%last_track)){
-												$stats{'played'}->[-1]{'scrobbled'} = 1;
-												$stats{'played'}->[-1]{'time'} = time();
-											}
-										}else{
-											$self->msg(2, 'skip scrobbling');
-											$state = 'scrobble' if $state eq 'skip';
-										}
-										$last_track{'artist'} = $current_track->{'artist'};
-										$last_track{'track'} = $current_track->{'track'};
-										push @{$stats{'played'}}, {
-											%$current_track,
-											'time' => time,
-											'scrobbled' => 0,
-										};
-									}
-									$self->scrobble_forked($current_track, 'now playing');
-								}else{
-									$self->msg(1, $current_track);
-								}
-							}
-						}
-					}
-					$byte_count = 0;
-					$byte_inc = $byte_inc_default < $icy_metaint ? $byte_inc_default
-						: $icy_metaint;
-				}elsif($byte_count + $byte_inc > $icy_metaint){
-					$byte_inc = $icy_metaint - $byte_count;
-				}
-			}
-		}
-		ReadMode('restore') if defined &ReadMode;
-		close HANDLER;
-		$socket->close;
-		return 1;
-	}
-
-	sub stream_scrobble_user_interface{
-		my $self = shift;
-		my $last_track = shift;
-		my $state = shift;
-		my $stats = shift;
-		my $key = ReadKey(-1) if defined &ReadKey;
-		if(defined $key){
-			if($key eq 'i'){
-				if($self->scrobble_forked($last_track)){
-					$stats->{'played'}[-1]{'scrobbled'} = 1;
-					$stats->{'played'}[-1]{'time'} = time();
-				}
-				$state = 'skip';
-			}elsif($key eq 'n'){
-				$self->msg(1, 'no scrobbling from now on.');
-				$state = 'no scrobble';
-			}elsif($key eq 'k'){
-				$self->msg(1, 'skip scrobbling of current track');
-				$state = 'skip';
-			}elsif($key eq 's'){
-				$self->msg(1, 'scrobbling from now on.');
-				$state = 'scrobble';
-			}elsif($key eq 't'){
-				my $time_playing = time() - $stats->{'start_time'};
-				my $bytes_rec = $stats->{'info_bytes'} + $stats->{'music_bytes'};
-				my $scrobbled =()= grep {$_->{'scrobbled'}} @{$stats->{'played'}};
-				$self->msg(1, '-'x72); 
-				$self->msg(1, sprintf('playing since %s UTC (%us)', 
-						'' . gmtime($stats->{'start_time'}), 
-						$time_playing,
-					)
-				);
-				$self->msg(1, 
-					sprintf('bytes received: %uMB (%ukB music + %ukB info) at rate %ukB/s', 
-						$bytes_rec / 1e6, # no Mebi
-						$stats->{'music_bytes'} / 1000, 
-						$stats->{'info_bytes'} / 1000,
-						$bytes_rec / (1000 * $time_playing),
-					)
-				);
-				$self->msg(1, 
-					sprintf('played tracks %u (avg. %u per hour), ' 
-						. 'scrobbled %u (avg. %u per hour)', 
-						scalar(@{$stats->{'played'}}), 
-						scalar(@{$stats->{'played'}}) * 60 * 60 / $time_playing, 
-						$scrobbled, 
-						$scrobbled * 60 * 60 / $time_playing, 
-					)
-				);
-				$self->msg(1, '-'x72); 
-			}else{
-				$self->msg(1, 'i - Immediately scrobble current track');
-				$self->msg(1, 'n - No scrobbling');
-				$self->msg(1, 'k - sKip scrobbling for current track');
-				$self->msg(1, 's - Scrobbling');
-				$self->msg(1, 't - sTatistics');
-			}
-		}
-		return $state;
 	}
 
 	sub get_all_user_data{
@@ -1274,6 +1043,237 @@ sub syntaxCheck{
 			}
 		}
 		return 1;
+	}
+
+	sub stream_connect{
+		my $self = shift;
+		my $url = shift;
+		my $socket;
+		my $icy_metaint;
+		if($url =~ /https?:\/\/([^:\/]*)(?:\:(\d+))?(?:\/(.*))?/){
+			my $host = $1;
+			my $port = $2 // 80;
+			my $file = '/' . ($3 // '');
+			$self->msg(1, "connecting to $host:$port");
+			$socket = IO::Socket::INET->new(
+				PeerHost => $host,
+				PeerPort => $port,
+				Proto => 'tcp',
+			);
+			if($socket){
+				$self->{'socket'} = $socket;
+				$self->msg(1, "requesting '$file'");
+				my $send_header = 
+					"GET $file HTTP/1.0\n" .
+					"Icy-MetaData:1\n\n" .
+					"Accept: */*\n" .
+					"User-Agent: dl_lfm v$::VERSION\n\n";
+				$self->msg(2, "sending header: $send_header");
+				$socket->send($send_header);
+				$self->msg(2, "waiting for reply");
+				my $header = <$socket>;
+				chomp($header);
+				unless($header =~ /200|OK/){
+					$self->msg(1, "header = $header");
+					$self->msg(0, 'reading of stream header failed.', 'warning');
+					return (undef, undef);
+				}
+				$self->msg(2, $header);
+				my %icy_info = ();
+				while($header = <$socket>){
+					$header =~ s/[\r\n]+$//;
+					$icy_info{'content-type'} = $1 if $header =~ /^Content-Type:(.+)/;
+					$icy_info{'bitrate'} = $1      if $header =~ /^icy-br:([0-9]+)/;
+					$icy_info{'genre'} = $1        if $header =~ /^icy-genre:(.+)/;
+					$icy_info{'radio'} = $1        if $header =~ /^icy-name:(.+)/;
+					$icy_info{'url'} = $1          if $header =~ /^icy-url:(.+)/;
+					if($header =~ /^icy-metaint:([0-9]+)/){
+						$icy_metaint = $1;
+					}
+					$self->msg(3, "header: $header");
+					last unless $header =~ /\S/;
+				}
+				if(keys(%icy_info) > 0){ # print some information
+					$self->msg(1, 'radio: ' . ($icy_info{'radio'} // 'unknown') . ' from ' 
+						. ($icy_info{'url'} // 'unknown'));
+					$self->msg(1, 'audio type: ' . ($icy_info{'content-type'} // 'unknown') 
+						. ' with bitrate ' . ($icy_info{'bitrate'} // 'unknown'));
+					$self->msg(1, 'genre: ' . ($icy_info{'genre'} // 'unknown'));
+				}
+				defined $icy_metaint or $self->msg(0, 'no icy meta intervall found', 
+					'warning');
+			}else{
+				$self->msg(1, "socket creation failed: $!", 'notice');
+			}
+		}else{
+			$self->msg(2, "could not read url", 'notice');
+		}
+		return ($socket, $icy_metaint);
+	}
+
+	sub stream_parse_icy_info{
+		my $self = shift;
+		my $str  = shift;
+		if($str =~ /^StreamTitle='(?:NEXT: ?)?(.*) - (.*)';(?:StreamUrl='|$)/){
+			return {
+				'artist' => $1,
+				'track'  => $2,
+			}
+		}else{
+			return $str;
+		}
+	}
+
+	sub stream_read_current_track{
+		my $self        = shift;
+		my $icy_metaint = shift;
+		# out file or stream, e.g. '>test.mp3' or '| vlc -'
+		my $outstream   = $self->{'stream_out'} // '| vlc -'; 
+		my $content; 
+		my $byte_count = 0; 
+		my $byte_inc_default = 1024; 
+		my $byte_inc = (defined($icy_metaint) && $byte_inc_default >= $icy_metaint)
+			? $icy_metaint : $byte_inc_default; 
+		my $info = '';
+		open(HANDLER, $outstream) 
+			or die "error: cannot pipe input to '" . substr($outstream, 1) . "': $!\n";
+		$self->msg(1, "redirecting HTTP filestream to '$outstream'");
+		my %last_track = ('artist' => '', 'track' => '');
+		my $socket = $self->{'socket'};
+		unless(defined $socket){
+			$self->msg(0, 'socket not defined. did you call stream_connect already?', 'error');
+			return 0;
+		}
+		$SIG{'CHLD'} = 'IGNORE'; # avoid creating zombies with fork
+		my $state = 'scrobble';
+		ReadMode('cbreak') if defined &ReadMode;
+		my %stats = ( # used for statistics on stream
+			'info_bytes'  => 0,
+			'music_bytes' => 0,
+			'played'      => [],
+			'start_time'  => time(),
+		); 
+		while($socket->read($content, $byte_inc)){
+			$stats{'music_bytes'} += $byte_inc;
+			#printf "read %d, %d\n", length($content), $byte_inc;
+			$state = $self->stream_scrobble_user_interface(\%last_track, $state, \%stats);
+			print HANDLER $content;
+			if(defined $icy_metaint){
+				$byte_count += $byte_inc;
+				if($byte_count == $icy_metaint){
+					$socket->read($content, 1);
+					++$stats{'info_bytes'};
+					my $length = 16 * ord($content);
+					if($length > 0){
+						$socket->read($content, $length);
+						$stats{'info_bytes'} += $length;
+						$content =~ s/\s+$//;
+						$self->msg(4, $content);
+						if($content ne $info){
+							$info = $content;
+							if($info =~ /\S/){
+								my $current_track = $self->stream_parse_icy_info($info);
+								if(ref $current_track eq 'HASH'){
+									$current_track->{'chosenByUser'} = '0';
+									if($last_track{'artist'} ne $current_track->{'artist'} ||
+										$last_track{'track'} ne $current_track->{'track'}){
+										if($state eq 'scrobble'){
+											if($self->scrobble_forked(\%last_track)){
+												$stats{'played'}->[-1]{'scrobbled'} = 1;
+												$stats{'played'}->[-1]{'time'} = time();
+											}
+										}else{
+											$self->msg(2, 'skip scrobbling');
+											$state = 'scrobble' if $state eq 'skip';
+										}
+										$last_track{'artist'} = $current_track->{'artist'};
+										$last_track{'track'} = $current_track->{'track'};
+										push @{$stats{'played'}}, {
+											%$current_track,
+											'time' => time,
+											'scrobbled' => 0,
+										};
+									}
+									$self->scrobble_forked($current_track, 'now playing');
+								}else{
+									$self->msg(1, $current_track);
+								}
+							}
+						}
+					}
+					$byte_count = 0;
+					$byte_inc = $byte_inc_default < $icy_metaint ? $byte_inc_default
+						: $icy_metaint;
+				}elsif($byte_count + $byte_inc > $icy_metaint){
+					$byte_inc = $icy_metaint - $byte_count;
+				}
+			}
+		}
+		ReadMode('restore') if defined &ReadMode;
+		close HANDLER;
+		$socket->close;
+		return 1;
+	}
+
+	sub stream_scrobble_user_interface{
+		my $self = shift;
+		my $last_track = shift;
+		my $state = shift;
+		my $stats = shift;
+		my $key = ReadKey(-1) if defined &ReadKey;
+		if(defined $key){
+			if($key eq 'i'){
+				if($self->scrobble_forked($last_track)){
+					$stats->{'played'}[-1]{'scrobbled'} = 1;
+					$stats->{'played'}[-1]{'time'} = time();
+				}
+				$state = 'skip';
+			}elsif($key eq 'n'){
+				$self->msg(1, 'no scrobbling from now on.');
+				$state = 'no scrobble';
+			}elsif($key eq 'k'){
+				$self->msg(1, 'skip scrobbling of current track');
+				$state = 'skip';
+			}elsif($key eq 's'){
+				$self->msg(1, 'scrobbling from now on.');
+				$state = 'scrobble';
+			}elsif($key eq 't'){
+				my $time_playing = time() - $stats->{'start_time'};
+				my $bytes_rec = $stats->{'info_bytes'} + $stats->{'music_bytes'};
+				my $scrobbled =()= grep {$_->{'scrobbled'}} @{$stats->{'played'}};
+				$self->msg(1, '-'x72); 
+				$self->msg(1, sprintf('playing since %s UTC (%us)', 
+						'' . gmtime($stats->{'start_time'}), 
+						$time_playing,
+					)
+				);
+				$self->msg(1, 
+					sprintf('bytes received: %uMB (%ukB music + %ukB info) at rate %ukB/s', 
+						$bytes_rec / 1e6, # no Mebi
+						$stats->{'music_bytes'} / 1000, 
+						$stats->{'info_bytes'} / 1000,
+						$bytes_rec / (1000 * $time_playing),
+					)
+				);
+				$self->msg(1, 
+					sprintf('played tracks %u (avg. %u per hour), ' 
+						. 'scrobbled %u (avg. %u per hour)', 
+						scalar(@{$stats->{'played'}}), 
+						scalar(@{$stats->{'played'}}) * 60 * 60 / $time_playing, 
+						$scrobbled, 
+						$scrobbled * 60 * 60 / $time_playing, 
+					)
+				);
+				$self->msg(1, '-'x72); 
+			}else{
+				$self->msg(1, 'i - Immediately scrobble current track');
+				$self->msg(1, 'n - No scrobbling');
+				$self->msg(1, 'k - sKip scrobbling for current track');
+				$self->msg(1, 's - Scrobbling');
+				$self->msg(1, 't - sTatistics');
+			}
+		}
+		return $state;
 	}
 
 	sub youtube_get_video_length{
