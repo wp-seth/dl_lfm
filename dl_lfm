@@ -28,6 +28,9 @@ binmode STDOUT, ":utf8";
 #
 # Lastfm_dl: main class 
 # ---------------------
+# sub new
+#		constructor
+#
 # sub authenticate
 #		unused: last.fm authentication
 #
@@ -63,6 +66,9 @@ binmode STDOUT, ":utf8";
 # 	get date and time as formatted string "%Y-%m-%d %H:%M:%S" from given 
 # 	(or current) unix timestamp
 #
+#	sub get_time_mm_ss2s
+#		convert time duration format mm:ss to number of seconds
+#
 # sub get_time_unix
 # 	get unix timestamp from iso-like formatted string "%Y-%m-%d %H:%M:%S" 
 # 	(using timelocal or timegm)
@@ -95,6 +101,10 @@ binmode STDOUT, ":utf8";
 #		scrobble a given track to the current last.fm profile or update the 
 #		"now playing" track
 #
+# sub scrobble_from_source
+#		handle different kind of music sources:	
+#		bandcamp-album-url, radio stream, json file
+#
 #	sub stream_connect
 #		given an url, connect to a http(s)-shoutcast-stream; 
 #		return socket and icy-metadata
@@ -111,9 +121,9 @@ binmode STDOUT, ":utf8";
 #	sub stream_scrobble_user_interface
 #		a simple user interface can be used to skip/stop scrobbling when using a stream
 #
-# sub scrobble_from_source
-#		handle different kind of music sources:	
-#		bandcamp-album-url, radio stream, json file
+#	sub youtube_get_video_length{
+#		given a youtube video url, this function returns the length of the video in 
+#		seconds
 
 # Carp::Always
 sub _die {
@@ -986,7 +996,7 @@ sub syntaxCheck{
 	}
 
 	sub scrobble_from_source{
-		my $self = shift;
+		my $self   = shift;
 		my $source = shift;
 		if($source =~ /^star\s*fm\s*berlin$/i){
 			$source = 'https://berlin.starfm.de/player/pls/berlin_pls_mp3.php';
@@ -1187,7 +1197,7 @@ sub syntaxCheck{
 											$state = 'scrobble' if $state eq 'skip';
 										}
 										$last_track{'artist'} = $current_track->{'artist'};
-										$last_track{'track'} = $current_track->{'track'};
+										$last_track{'track'}  = $current_track->{'track'};
 										push @{$stats{'played'}}, {
 											%$current_track,
 											'time' => time,
