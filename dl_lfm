@@ -12,8 +12,9 @@ use Data::Dumper;
 use Getopt::Long qw(:config bundling);
 use Pod::Usage;
 use POSIX qw/strftime/;       # format timestamp
+use Term::ReadKey;            # used for user input
 
-$main::VERSION = '0.6.1';
+$main::VERSION = '0.7';
 binmode STDOUT, ":utf8";
 
 # functions
@@ -27,13 +28,55 @@ binmode STDOUT, ":utf8";
 # sub syntaxCheck
 # 	check input of user
 #
-# Lastfm_dl: main class 
-# ---------------------
+# MPlayerWrapper: mplayer wrapper class 
+# -------------------------------------
+# sub new
+# 	constructor
+# sub cmd
+# 	send sommand to mplayer
+# sub enqueue
+# 	enqueue track to playlist
+# sub get_current_file
+# 	get currently played file
+# sub get_pos
+# 	get current position in current track
+# sub get_time_is
+# 	time format conversion
+# sub get_time_iso_
+# 	time format conversion
+# sub init
+# 	look for mplayer, set internal path to mplayer
+# sub is_running
+# 	return 1 if mplayer is running
+# sub mplayer_keypress
+# 	try to imitate mplayer shortcut bindings
+# sub mplayer_std_handler
+# 	handler for stdout and stderr output
+# sub msg
+# 	print message to screen
+# sub play
+# 	play track
+# sub quit
+# 	quit
+# sub run
+#		starts mplayer in a separate process
+# sub wait_for_end
+# 	wait for end of playlist
+# sub wait_for_last_track
+# 	wait until beginn of last track in playlist
+# sub wait_for_track
+# 	wait for begin of given track
+#
+# Lastfm_dl: main class for last.fm stuff
+# ---------------------------------------
 # sub new
 # 	constructor
 #
 # sub authenticate
 # 	unused: last.fm authentication
+#
+# sub bandcamp_radio
+# 	play bandcamp music like a radio station
 #
 # sub collect_trackinfos_bandcamp
 # 	given an url to a bandcamp album, this function returns information on 
@@ -44,6 +87,9 @@ binmode STDOUT, ":utf8";
 # 	given an url to a youtube album, this function tries to return information on 
 # 	album title, tracks (number, title, duration) and artist in a last.fm
 # 	compatible format
+#
+# sub delete_ugly_chars
+# 	convert string to nicer filename
 #
 # sub get_all_user_data
 # 	get all important user statistics from last.fm for a given user and save it to 
@@ -106,6 +152,9 @@ binmode STDOUT, ":utf8";
 # 	handle different kind of music sources:	
 # 	bandcamp-album-url, radio stream, json file
 #
+# sub set_mp3_tags
+# 	for a given file set mp3 tags via lastfm struct
+#
 # sub stream_connect
 # 	given an url, connect to a http(s)-shoutcast-stream; 
 # 	return socket and icy-metadata
@@ -125,6 +174,8 @@ binmode STDOUT, ":utf8";
 # sub youtube_get_video_length{
 # 	given a youtube video url, this function returns the length of the video in 
 # 	seconds
+
+$| = 1; # don't buffer; stdout is hot now
 
 # Carp::Always
 sub _die {
@@ -148,15 +199,29 @@ sub _warn {
 	warn &Carp::longmess;
 }
 
-$SIG{__DIE__} = \&_die;
-$SIG{__WARN__} = \&_warn;
+sub _clean{
+	ReadMode('restore') if defined &ReadMode;
+	_die(@_);
+}
+
+sub _cleanup{
+	ReadMode('restore') if defined &ReadMode;
+	exit 1;
+}
+
+$SIG{'__DIE__'} = \&_clean;
+$SIG{'INT'}     = \&_cleanup;
+$SIG{'KILL'}    = \&_cleanup;
+$SIG{'TERM'}    = \&_cleanup;
+$SIG{__WARN__}  = \&_warn;
 
 sub syntaxCheck{
 	my %params = ( # default cli params
 		'dl'            => 0,     # download user data
 		'password'      => undef, # password
 		'password-file' => "$ENV{'HOME'}/.password_lastfm", # file containing password
-		'scrobble'      => undef, # file or radio station to scrobble
+		'radio'         => undef, # play radio station or album and scrobble
+		'scrobble'      => undef, # file or radio station to scrobble (without playing)
 		'timestamp'     => undef, # timestamp in utc for scrobbling
 		'timestamp-local' => undef, # timestamp in local time for scrobbling
 		'stream-out'    => '| vlc -', # the destination for streaming data
@@ -169,6 +234,7 @@ sub syntaxCheck{
 		"dl",
 		"password=s",
 		"password-file=s",
+		"radio|r=s",
 		"scrobble|s=s",
 		"stream-out=s",
 		"timestamp=s",
@@ -205,6 +271,363 @@ sub syntaxCheck{
 }
 
 {
+	package MPlayerWrapper;
+	use Data::Dumper;           # debug output
+	use IPC::Run qw(start pump finish);
+	use POSIX qw/strftime/;     # format timestamp
+	use Term::ReadKey;          # used for user input
+	use Time::HiRes qw(usleep); # debug output
+
+	sub new {
+		my $class  = shift;
+		my $params = shift;
+		my $self  = bless {
+			'stderr'  => [],
+			'handle'  => undef,
+			'in'      => undef,
+			'mplayer' => 'mplayer',
+			'played'  => [],
+			'stdout'  => [],
+			'verbose' => $params->{'verbose'} // 1,
+		}, $class;
+		$self->init();
+		$self->run();
+		$self;
+	}
+
+	sub cmd{
+		my $self = shift;
+		my $cmd  = shift;
+		my $min_verbosity = shift // 1;
+		$self->msg($min_verbosity, "mplayer cmd: $cmd");
+		if($self->is_running){
+			$self->{'in'} = "$cmd\n";
+			pump $self->{'handle'};
+			return 1;
+		}else{
+			$self->msg(0, "mplayer is not running. cannot send '$cmd'", 'error');
+			return 0;
+		}
+	}
+
+	sub enqueue{
+		my $self = shift;
+		my $file = shift;
+		my $enqueue = 1;
+		return $self->play($file, $enqueue);
+	}
+
+	sub get_current_file{
+		my $self = shift;
+		my $min_verbosity = shift // 3;
+		my $file;
+		if($self->is_running){
+			$self->cmd('get_file_name', $min_verbosity);
+			if($self->{'last_stdout_line'} =~ /ANS_FILENAME='(.*)'/){
+				$file = $1;
+			}
+		}
+		return $file;
+	}
+
+	sub get_pos{
+		my $self = shift;
+		my $pos;
+		my $min_verbosity = 3;
+		$self->cmd('get_time_pos', $min_verbosity);
+		if($self->{'last_stdout_line'} =~ /ANS_TIME_POSITION='(.*)'/){
+			$pos = $1;
+		}
+		#$pos->{'file'} = $self->get_current_file($min_verbosity);
+		#$self->cmd('get_percent_pos', $min_verbosity);
+		#$self->{'stdout'}[-1] =~ /ANS_PERCENT_POSITION=(.*)/;
+		#$pos->{'percent'} = $1;
+		#$self->cmd('get_time_length', $min_verbosity);
+		#$self->{'stdout'}[-1] =~ /ANS_LENGTH=(.*)/;
+		#$pos->{'length'} = $1;
+		return $pos;
+	}
+
+	sub get_time_iso{
+		my $self = shift;
+		my $unixtimestamp = shift // time();
+		return strftime("%Y-%m-%dT%H:%M:%S", gmtime($unixtimestamp));
+	}
+
+	sub get_time_iso_{
+		my $self = shift;
+		my $unixtimestamp = shift // time();
+		return strftime("%Y-%m-%d %H:%M:%S", gmtime($unixtimestamp));
+	}
+
+	sub init{
+		my $self = shift;
+		my $mplayer = `which mplayer`;
+		chomp($mplayer);
+		if($mplayer ne ''){
+			$self->{'mplayer'} = $mplayer;
+			return 1;
+		}else{
+			return 0;
+		}
+	}
+
+	sub is_running{
+		my $self = shift;
+		return defined $self->{'handle'};
+	}
+
+	sub mplayer_keypress{
+		my $self = shift;
+		my $key = ReadKey(-1) if defined &ReadKey;
+		if(defined $key){
+			$self->msg(2, "key: " . length($key) . ", ". ord($key));
+			if($key eq 'h'){
+				my $str = '';
+				$str .= " h                print this help\n";
+				$str .= " <-  or  ->       seek backward/forward 10 seconds\n";
+				$str .= " down or up       seek backward/forward  1 minute\n";
+				$str .= " pgdown or pgup   seek backward/forward 10 minutes\n";
+				$str .= " < or >           step backward/forward in playlist\n";
+				$str .= " p or SPACE       pause movie (press any key to continue)\n";
+				$str .= " q or ESC         stop playing and quit program\n";
+				$str .= " + or -           adjust audio delay by +/- 0.1 second\n";
+				#$str .= " o          cycle OSD mode:  none / seekbar / seekbar + timer\n";
+				$str .= " * or /           increase or decrease PCM volume\n";
+				#$str .= " x or z           adjust subtitle delay by +/- 0.1 second\n";
+				#$str .= " r or t  adjust subtitle position up/down, also see -vf expand\n";
+				$self->msg(0, $str);
+			}elsif(ord($key) == 27){
+				my @esc = ();
+				while($key = ReadKey(-1)){
+					push @esc, ord($key);
+					$self->msg(3, $esc[-1]);
+				}
+				if(@esc == 0){
+					$self->quit;
+				}elsif(@esc == 2){
+					if($esc[0] == 91 && $esc[1] == 67){
+						$self->cmd("seek 10"); # ->
+					}elsif($esc[0] == 91 && $esc[1] == 68){
+						$self->cmd("seek -10"); # <-
+					}elsif($esc[0] == 91 && $esc[1] == 65){
+						$self->cmd("seek 60"); # up
+					}elsif($esc[0] == 91 && $esc[1] == 66){
+						$self->cmd("seek -60"); # down
+					}else{
+						print Dumper \@esc;
+						$self->msg(0, 'unrecognized short cut key', 'warning');
+					}
+				}
+			}elsif($key eq '<'){
+				$self->cmd("pt_step -1");
+			}elsif($key eq '>'){
+				$self->cmd("pt_step 1");
+			}elsif($key eq 'p' or $key eq ' '){
+				$self->cmd("pause");
+				until($key = ReadKey(-1)){
+					usleep 200_000;
+				}
+			}elsif($key eq 'q'){
+				$self->quit;
+			}elsif($key eq '+'){
+				$self->cmd("audio_delay 0.1");
+			}elsif($key eq '-'){
+				$self->cmd("audio_delay -0.1");
+			}elsif($key =~ /^[oxzrt]\z/){
+				$self->msg(0, 'not implemented', 'warning');
+			}elsif($key eq '*'){
+				$self->cmd("volume 0.1");
+			}elsif($key eq '/'){
+				$self->cmd("volume -0.1");
+			}else{
+				$self->msg(0, 'unrecognized short cut key', 'warning');
+			}
+		}
+	}
+
+	sub mplayer_std_handler{
+		my $self = shift;
+		my $type = shift;
+		my $msg  = shift;
+		my @complete_msgs = split /[\n\r]+/, $msg;
+		for my $cmsg(@complete_msgs){
+			chomp($cmsg);
+			if($self->{'last_' . $type . '_line'} ne $cmsg){
+				push @{$self->{$type}}, $cmsg;
+				$self->{'last_' . $type . '_line'} = $cmsg;
+				$cmsg =~ s/^/$type: /mg;
+				if($type eq 'stderr'){
+					$cmsg =~ s/^stderr:/mpl_err:/;
+					$self->msg(0, $cmsg);
+				}else{ # stdout
+					if($self->{'verbose'} > 2 
+						|| (
+							$cmsg !~ /^stdout: ANS_TIME_POSITION/
+							&& $cmsg !~ /^stdout: AO: \[pulse\] 44100Hz/
+							&& $cmsg !~ /^stdout: Audio only file format/
+							&& $cmsg !~ /^stdout: AUDIO: 44100 Hz/
+							&& $cmsg !~ /^stdout:\s(?:Cannot\sopen\sfile|Failed\sto\sopen)\s
+								'?\/.*mplayer\/input\.conf/x
+							&& $cmsg !~ /^stdout: libav(?:codec|format) version/
+							&& $cmsg !~ /^stdout: Load subtitles in/
+							&& $cmsg !~ /^stdout: Mismatching header version/
+							&& $cmsg !~ /^stdout: Opening audio decoder:/
+							&& $cmsg !~ /^stdout: [\s=]*$/
+							&& $cmsg !~ /^stdout: Selected audio codec:/
+							&& $cmsg !~ /^stdout: Video: no video/
+						) 
+						&& (
+							$self->{'verbose'} > 1 
+							|| (
+								$cmsg !~ /^stdout: MPlayer2? .* 2000-2... MPlayer Team/
+							)
+						)
+					){
+						# that's probably nicer in this context
+						$cmsg =~ s/^stdout:/mplayer:/;
+						$self->msg(1, $cmsg);
+					}
+				}
+			}
+		}
+		return 1;
+	}
+
+	sub msg{
+		my $self           = shift;
+		my $verb_threshold = shift;
+		my $msg            = shift;
+		my $type           = shift;
+		my $caller_inc     = shift // 0;
+		return 0 if $self->{'verbose'} < $verb_threshold;
+		push @{$self->{'_messages'}}, {'type' => $type, 'msg' => $msg} if defined $type;
+		$type = (defined $type ? "$type in ": '');
+		my $timestamp = $self->get_time_iso_;
+		# my ($package, $filename, $line, $subr, $has_args, $wantarray, $evaltext, 
+		# $is_require, $hints, $bitmask, $hinthash) = caller(0);
+		my @callers = caller(0 + $caller_inc);
+		my $line = $callers[2];
+		@callers = caller(1 + $caller_inc);
+		my $subr = $callers[3] // '[no sub]';
+		if($self->{'verbose'} > 1){
+			print "$timestamp $type$subr:$line: ";
+		}elsif($type ne ''){
+			print "$type$subr:$line: ";
+		}
+		print "$msg\n";
+		return 1;
+	}
+
+	sub play{
+		my $self = shift;
+		my $file = shift;
+		my $enqueue = shift;
+		if($enqueue){
+			$self->cmd("loadfile '$file' 1");
+		}else{
+			$self->cmd("loadfile '$file'");
+		}
+		push @{$self->{'played'}}, $file;
+		return 1;
+	}
+
+	sub quit{
+		my $self = shift;
+		if($self->is_running){
+			$self->cmd('quit');
+			finish $self->{'handle'};
+			undef $self->{'handle'};
+			return $?/256;
+		}else{
+			$self->msg(0, 'mplayer is not running, so cannot be exited', 'warning');
+		}
+		return -1;
+	}
+
+	sub run{
+		my $self = shift;
+		my $cmd  = "$self->{'mplayer'} -slave -idle -quiet";
+		$self->msg(1, "command: '$cmd'");
+		$self->{'last_stdout_line'} = '';
+		$self->{'last_stderr_line'} = '';
+		my $stdout_handler = sub {
+			$self->mplayer_std_handler('stdout', @_);
+		};
+		my $stderr_handler = sub {
+			$self->mplayer_std_handler('stderr', @_);
+		};
+		$self->{'handle'} = start(
+			[split ' ', $cmd], \$self->{'in'}, $stdout_handler, $stderr_handler);
+		# will die if mplayer not found
+		return $self->is_running;
+	}
+
+	sub wait_for_end{
+		my $self = shift;
+		ReadMode('cbreak') if defined &ReadMode;
+		for(my ($pos, $pos_old); 
+			$self->is_running() && (!defined($pos) || $pos != $pos_old); 
+			$pos = $self->get_pos()
+		){
+			$pos_old = $pos // 0;
+			$self->mplayer_keypress;
+			usleep 300_000;
+			#print Dumper [$pos, $pos_old];
+		}
+		ReadMode('restore') if defined &ReadMode;
+		return 1;
+	}
+
+	sub wait_for_last_track{
+		my $self = shift;
+		if(@{$self->{'played'}} > 1){
+			$self->msg(2, "waiting until track '$self->{'played'}[-1]' will start");
+			return $self->wait_for_track($self->{'played'}[-1]);
+		}else{
+			$self->msg(2, 'not waiting because play list size = ' 
+				. scalar(@{$self->{'played'}}));
+			return 0;
+		}
+	}
+
+	sub wait_for_track{
+		my $self = shift;
+		my $file_w_path = shift;
+		my $file_wo_path;
+		if($file_w_path =~ /([^\/]+)$/){
+			$file_wo_path = $1;
+		}
+		ReadMode('cbreak') if defined &ReadMode;
+		my $undef_counter = 0;
+		my $curr_file;
+		while(
+			$self->is_running() # while mplayer is running and 
+			&& $undef_counter < 50 # current track is not undefined for >5 seconds and
+			# current track is not track we are waiting for
+			&& (!defined($curr_file) 
+				|| ($curr_file ne $file_w_path && $curr_file ne $file_wo_path)
+			)
+		){
+			if(defined $curr_file){
+				$undef_counter = 0;
+			}else{
+				++$undef_counter;
+			}
+			$self->mplayer_keypress;
+			usleep 500_000; # TODO: 100_000
+			$curr_file = $self->get_current_file();
+		}
+		ReadMode('restore') if defined &ReadMode;
+		if(defined $curr_file){
+			$self->msg(2, "waited until '$curr_file'");
+		}
+		return 1;
+	}
+
+}
+
+{
 	package Lastfm_dl;
 	use Data::Dumper;
 	use Digest::MD5 qw(md5_hex);
@@ -212,6 +635,7 @@ sub syntaxCheck{
 	use IO::Socket::INET;
 	use JSON;
 	use LWP::UserAgent;         # fast, small web browser
+	use MP3::Tag;               # write mp3 tags
 	use POSIX qw/strftime/;     # format timestamp
 	use Term::ReadKey;          # used for user input
 	use Time::Local;            # timegm, timelocal
@@ -224,6 +648,7 @@ sub syntaxCheck{
 		my $self = bless {
 			'api_key'       => '33068e0258f716d75a8265da4c71d2b2',
 			'lastfm_root'   => 'https://ws.audioscrobbler.com/2.0/',
+			'mplayer'       => undef,
 			'password'      => $params->{'password'},
 			'password_file' => $params->{'password-file'},
 			'shared_secret' => '4972ac93a09ce39fae4f7bf88adcaf91',
@@ -328,6 +753,162 @@ sub syntaxCheck{
 			. '&token=' . $self->{'token'};
 		my ($http_code, $content) = $self->get_http_content($auth_url);
 		return 1;
+	}
+
+	sub bandcamp_dl_album_random_track{
+		my $self = shift;
+		my $tracks = shift;
+		my @dl_tracks = grep {defined $_->{'non_lastfm_url'}} @$tracks;
+		my $random_track = $dl_tracks[int(rand(scalar(@dl_tracks)))];
+		return ($random_track, $self->bandcamp_dl_track($random_track));
+	}
+
+	sub bandcamp_dl_track{
+		my $self = shift;
+		my $trackinfo = shift;
+		my $filename; 
+		if(defined $trackinfo->{'non_lastfm_url'}){
+			my $dl_path = 'downloaded_music';
+			mkdir $dl_path;
+			my $readme_file = "$dl_path/readme.txt";
+			unless(-f $readme_file){
+				if(open(my $OUTFILE, '>', $readme_file)){
+					print $OUTFILE 'this directory contains the mp3 files of the bandcamp ';
+					print $OUTFILE 'tracks downloaded by dl_lfm.' . "\n" . 'they can be used';
+					print $OUTFILE ' as remarkers, in case you forgot what you\'ve listened ';
+					print $OUTFILE "to.\n" ;
+					print $OUTFILE 'if you like a track, please consider buying the track or';
+					print $OUTFILE ' full album at bandcamp.com.';
+					close($OUTFILE);
+				}else{
+					$self->msg(0, "$!: '$readme_file'", 'error');
+				}
+			}
+			mkdir 'downloaded_music/' . $self->delete_ugly_chars($trackinfo->{'artist'});
+			my $dir = 'downloaded_music/' 
+				. $self->delete_ugly_chars($trackinfo->{'artist'}) . '/' 
+				. $self->delete_ugly_chars($trackinfo->{'album'});
+			mkdir $dir;
+			$filename = sprintf('%s/%02d %s - %s.mp3', 
+				$dir,
+				$trackinfo->{'trackNumber'}, 
+				$self->delete_ugly_chars($trackinfo->{'artist'}), 
+				$self->delete_ugly_chars($trackinfo->{'track'})
+			);
+			if(-e $filename){
+				$self->msg(1, "file '$filename' exists already");
+			}else{
+				my $cmd = "wget '$trackinfo->{'non_lastfm_url'}' -O '$filename'";
+				$self->msg(1, $cmd);
+				unless($self->{'simulate'}){
+					$cmd .= ' -q' if $self->{'verbose'} < 3;
+					system($cmd);
+				}
+			}
+			$self->set_mp3_tags($filename, $trackinfo);
+		}else{
+			$self->msg(0, 'don\'t know, where to download the track', 'warning');
+		}
+		return $filename;
+	}
+
+	sub bandcamp_radio{
+		my $self = shift;
+		my $url = shift;
+		my $scrobble = shift;
+		my $play = shift;
+		# https://bandcamp.com/tag/metal?page=2&sort_field=pop
+		my $success = 0;
+		my $bandcamp_tag_base_path = 'https://bandcamp.com/tag';
+		if($url =~ /^https?:\/\/bandcamp\.com\/tag\/([a-z0-9]+)(\?.+|)$/){
+			my $tag = $1;
+			$self->msg(1, "reading page(s) of tag '$tag'");
+			# get HTTP GET params from url
+			my %params;
+			if(length($2) > 0){
+				my $paramstring = substr($2, 1);
+				%params = map {/^(.+)=(.*)$/; ($1 => $2)} split /&/, $paramstring;
+			}
+			my $first_page = $params{'page'} // 1;
+			$self->msg(5, Dumper(\%params));
+			# get tag page
+			my ($http_status, $content) = $self->get_http_content($url);
+			# get number of pages with albums of this tag
+			my $num_pages = 1;
+			my @page_numbers = $content =~ /
+				<li>
+					<a\s
+						class="[^"]+"\s
+						href="\?page=([0-9]+)"\s
+						rel="nofollow">[0-9]+
+					<\/a>
+				<\/li>/gxs;
+			my $max_num = (@page_numbers > 0) ? (sort @page_numbers)[-1] : 1;
+			$num_pages = $max_num - $first_page + 1;
+			$self->msg(3, "number of tag pages = $num_pages, first page = $first_page");
+			my @last_tracks = ();
+			# loop forever and play random tracks and scrobble them
+			if($play){
+				$self->{'mplayer'} = MPlayerWrapper->new({
+						'verbose' => $self->{'verbose'},
+					});
+			}
+			while($self->{'mplayer'}->is_running){
+				# get random page (rebuild url)
+				$self->msg(1, "get a random page from $first_page to " 
+					. ($first_page + $num_pages - 1));
+				$params{'page'} = $first_page + int(rand($num_pages));
+				$self->msg(2, "chose random page $params{'page'}");
+				$url = "$bandcamp_tag_base_path/$tag?";
+				while(my ($k, $v) = each %params){
+					$url .= "$k=$v&";
+				}
+				chop($url);
+				my ($http_status, $content) = $self->get_http_content($url);
+				if($http_status == 200){
+					# collect albums urls
+					my @albums = ($content =~ /
+						<a\s+href="
+						(https:\/\/[a-zA-Z0-9-]+\.bandcamp\.com\/album\/[^"]+)
+						"\s+/gx);
+					# goto random album and collect tracks information
+					my $tracks = $self->collect_trackinfos_bandcamp(
+						$albums[int(rand(scalar(@albums)))]);
+					# download random track from album
+					$self->msg(1, "choose random track and download");
+					my ($random_track, $filename) = 
+						$self->bandcamp_dl_album_random_track($tracks);
+					if(defined $filename){
+						$self->msg(3, "chose random track '$filename'");
+						$random_track->{'timestamp'} = undef;
+						$random_track->{'chosenByUser'} = '0';
+						push @last_tracks, $random_track;
+						$self->msg(2, 'play list = ' . Dumper(\@last_tracks));
+						# play and scrobble track
+						$self->{'mplayer'}->enqueue($filename) if $play;
+						$self->msg(2, 'play list in mplayer = ' 
+							. Dumper($self->{'mplayer'}->{'played'}));
+						if(!$play || $self->{'mplayer'}->wait_for_last_track()){
+							if(@last_tracks > 0){
+								$self->scrobble(shift @last_tracks) if $scrobble;
+							}
+						}
+					}else{
+						$self->msg(0, 'could not download track', 'warning');
+					}
+				}else{
+					$self->msg(0, "could not connect to '$url'. " 
+						. "maybe you should just try again.", 'error');
+				}
+			}
+			#$mplayer->wait_for_end;
+			#my $retval = $mplayer->quit;
+			#print " retval = $retval\n";
+			#$self->msg(1, "not done yet");
+		}else{
+			$self->msg(0, "could not read bandcamp tag url '$url'", 'error');
+		}
+		return $success;
 	}
 
 	sub collect_trackinfos_bandcamp{
@@ -460,6 +1041,14 @@ sub syntaxCheck{
 			$self->msg(0, 'could not find artist or album title', 'error');
 		}
 		return $last_fm_struct;
+	}
+
+	sub delete_ugly_chars{
+		my $self = shift;
+		my $filename = shift;
+		# delete ugly characters:
+		$filename =~ s/[\x00-\x1f"\$'*\/:?\\]/_/g;
+		return $filename;
 	}
 
 	sub get_all_user_data{
@@ -1022,6 +1611,8 @@ sub syntaxCheck{
 	sub scrobble_from_source{
 		my $self     = shift;
 		my $source   = shift;
+		my $scrobble = shift;
+		my $play     = shift;
 		if($source =~ /^star\s*fm\s*berlin$/i){
 			$source = 'https://berlin.starfm.de/player/pls/berlin_pls_mp3.php';
 		}elsif($source =~ /^star\s*fm\s*alternative$/i){
@@ -1035,15 +1626,30 @@ sub syntaxCheck{
 		my $radio;
 		if(defined $source){
 			if(-e $source){ # treat files as a json source
+				if($play){
+					$self->msg(0, 'don\'t know, how to play this type of source', 'error');
+				}
 				$scrobble_data = $self->load_json_file($source);
 			}elsif($source =~ /^https?:\/\//){
-				if($source =~ /^https?:\/\/(?!www\.)[a-z0-9_-]+\.bandcamp\.com\//){
+				if($source =~ /^https?:\/\/bandcamp\.com\/tag\//){
+					# bandcamp radio via tags
+					$self->bandcamp_radio($source, $scrobble, $play);
+					$radio = 1;
+				}elsif($source =~ /^https?:\/\/(?!www\.)[a-z0-9_-]+\.bandcamp\.com\//){
 					# bandcamp album page
+					if($play){
+						$self->msg(0, 'playing is not yet implemented for this type of source', 
+							'error');
+					}
 					$scrobble_data = {
 						'tracks' => $self->collect_trackinfos_bandcamp($source)
 					};
 				}elsif($source =~ /^https?:\/\/(?:www+\.)?youtube\.com\//){
 					# youtube album page (experimental)
+					if($play){
+						$self->msg(0, 'playing is not yet implemented for this type of source', 
+							'error');
+					}
 					$scrobble_data = {
 						'tracks' => $self->collect_trackinfos_youtube($source)
 					};
@@ -1060,7 +1666,7 @@ sub syntaxCheck{
 						($stream, $icy_metaint) = $self->stream_connect($sources[$i]);
 						if($stream && defined($icy_metaint)){
 							# endless loop (scrobbling will be done there)
-							$self->stream_read_current_track($icy_metaint);
+							$self->stream_read_current_track($icy_metaint, $scrobble, $play);
 						}
 					}
 					$radio = 1;
@@ -1074,12 +1680,43 @@ sub syntaxCheck{
 					'error');
 			}
 		}
-		if(defined $scrobble_data){
+		if($scrobble && defined($scrobble_data)){
 			for my $track(@{$scrobble_data->{'tracks'}}){
 				$self->scrobble($track);
 			}
 		}
 		return 1;
+	}
+
+	sub set_mp3_tags{
+		my $self      = shift;
+		my $filename  = shift;
+		my $trackinfo = shift;
+		my $changed = 0;
+		if(!$self->{'simulate'} && -f $filename){
+			my $mp3 = MP3::Tag->new($filename);
+			my $info = $mp3->autoinfo();
+			unless(defined $info->{'title'} && length($info->{'title'}) > 0){
+				$mp3->title_set($trackinfo->{'track'}); # sic
+				++$changed;
+			}
+			unless(defined $info->{'album'} && length($info->{'album'}) > 0){
+				$mp3->album_set($trackinfo->{'album'});
+				++$changed;
+			}
+			unless(defined $info->{'track'} && length($info->{'track'}) > 0){
+				$mp3->track_set($trackinfo->{'trackNumber'});
+				++$changed;
+			}
+			unless(defined $info->{'artist'} && length($info->{'artist'}) > 0){
+				$mp3->artist_set($trackinfo->{'artist'});
+				++$changed;
+			}
+			# TODO: save bandcamp-url as comment
+			$mp3->update_tags() if $changed > 0;
+			$mp3->close();
+		}
+		return $changed;
 	}
 
 	sub stream_connect{
@@ -1164,6 +1801,8 @@ sub syntaxCheck{
 	sub stream_read_current_track{
 		my $self        = shift;
 		my $icy_metaint = shift;
+		my $scrobble    = shift;
+		my $play        = shift;
 		# out file or stream, e.g. '>test.mp3' or '| vlc -'
 		my $outstream   = $self->{'stream_out'} // '| vlc -'; 
 		my $content; 
@@ -1172,9 +1811,12 @@ sub syntaxCheck{
 		my $byte_inc = (defined($icy_metaint) && $byte_inc_default >= $icy_metaint)
 			? $icy_metaint : $byte_inc_default; 
 		my $info = '';
-		open(my $HANDLER, $outstream) 
-			or die "error: cannot pipe input to '" . substr($outstream, 1) . "': $!\n";
-		$self->msg(1, "redirecting HTTP filestream to '$outstream'");
+		my $HANDLER;
+		if($play){
+			open($HANDLER, $outstream) 
+				or die "error: cannot pipe input to '" . substr($outstream, 1) . "': $!\n";
+			$self->msg(1, "redirecting HTTP filestream to '$outstream'");
+		}
 		my %last_track = ('artist' => '', 'track' => '');
 		my $socket = $self->{'socket'};
 		unless(defined $socket){
@@ -1195,7 +1837,7 @@ sub syntaxCheck{
 			$stats{'music_bytes'} += $byte_inc;
 			#printf "read %d, %d\n", length($content), $byte_inc;
 			$state = $self->stream_scrobble_user_interface(\%last_track, $state, \%stats);
-			print $HANDLER $content;
+			print $HANDLER $content if $play;
 			if(defined $icy_metaint){
 				$byte_count += $byte_inc;
 				if($byte_count == $icy_metaint){
@@ -1216,7 +1858,7 @@ sub syntaxCheck{
 									if($last_track{'artist'} ne $current_track->{'artist'} ||
 										$last_track{'track'} ne $current_track->{'track'}){
 										if($state eq 'scrobble'){
-											if($self->scrobble_forked(\%last_track)){
+											if($scrobble && $self->scrobble_forked(\%last_track)){
 												$stats{'played'}->[-1]{'scrobbled'} = 1;
 												$stats{'played'}->[-1]{'time'} = time();
 											}
@@ -1232,7 +1874,9 @@ sub syntaxCheck{
 											'scrobbled' => 0,
 										};
 									}
-									$self->scrobble_forked($current_track, 'now playing');
+									if($scrobble){
+										$self->scrobble_forked($current_track, 'now playing');
+									}
 								}else{
 									$self->msg(1, $current_track);
 								}
@@ -1248,7 +1892,7 @@ sub syntaxCheck{
 			}
 		}
 		ReadMode('restore') if defined &ReadMode;
-		close $HANDLER;
+		close $HANDLER if $play;
 		$socket->close;
 		return 1;
 	}
@@ -1369,11 +2013,15 @@ if($params->{'dl'}){
 		$lfm_dl->msg(0, 'username required', 'error');
 	}
 }
-if(defined $params->{'scrobble'}){
-	# not neccesary here, but it's better to check the credentials early
-	$lfm_dl->get_mobile_session() 
-		or die "could not login at last.fm with given credentials\n";
-	$lfm_dl->scrobble_from_source($params->{'scrobble'});
+if(defined($params->{'radio'}) || defined($params->{'scrobble'})){
+	my $url = $params->{'radio'} // $params->{'scrobble'};
+	my $mob_sess;
+	if(defined($params->{'user'}) || defined($params->{'scrobble'})){
+		# not neccesary here, but it's better to check the credentials early
+		$mob_sess = $lfm_dl->get_mobile_session() 
+			or die "could not login at last.fm with given credentials\n";
+	}
+	$lfm_dl->scrobble_from_source($url, $mob_sess, defined($params->{'radio'}));
 }
 
 __END__
@@ -1384,7 +2032,14 @@ downloads last.fm profiles and helps scrobbling from files or radio stations
 
 =head1 DESCRIPTION
 
-dl_lfm downloads last.fm profiles or helps scrobbling from files or radio stations.
+dl_lfm has several functions, it
+
+* downloads a last.fm profile
+
+* helps scrobbling from json files, radio stations or some webpages 
+(supported: bandcamp.com and experimentally youtube.com)
+
+* plays and scrobbles randomly picked tracks from bandcamp.com like a radio
 
 =head1 SYNOPSIS
 
@@ -1393,8 +2048,12 @@ dl_lfm [options]
       --dl                    download all data from user (requires -u)
       --password=string       password
       --password-file=string  a file containing your last-fm password
-  -s  --scrobble=src          use this file or radio station to scrobble some 
-                               tracks, see --man for suported file types and urls
+  -r  --radio=src             use radio station to play some tracks; if --user is 
+                               set, then tracks will be scrobbled, see --man for 
+                               suported urls
+  -s  --scrobble=src          use this file or radio station to scrobble some tracks
+                               without playing them, see --man for suported file 
+                               types and urls
       --stream-out=dest       use this destination to send the stream to 
                                (if scrobbling from stream), default = '| vlc -'
   -u, --user=string           username
@@ -1441,9 +2100,24 @@ use this password for last.fm user B<--user>=I<username>.
 use the first line of this file a password for last.fm. 
 default = $HOME/.password_lastfm
 
+=item B<--radio>=I<source>, B<-r> I<source>
+
+use I<source> for playing some tracks. if B<--user>=I<username> is set, then the 
+played tracks will be scrobbled to last.fm.
+
+supported urls or radio streaming stations: 
+
+* https://{band or label name}.bandcamp.com/album/{albumname}
+
+* https://bandcamp.com/tag/{tagname}
+
+* {protocol}://{ip address}:{port}
+
 =item B<--scrobble>=I<source>, B<-s> I<source>
 
-requires B<--user>=I<username> and B<--password>=I<password> for last.fm.
+same as B<--radio>, but without playing the tracks (if possible).
+
+requires B<--user>=I<username> for last.fm.
 
 use I<source> for scrobbling some tracks to last.fm.
 
@@ -1451,11 +2125,13 @@ supported file type(s): json
 
 OR
 
-supported urls: https://{band or label name}.bandcamp.com/album/{albumname}
+supported urls or radio streaming stations: 
 
-OR
+* https://{band or label name}.bandcamp.com/album/{albumname}
 
-supported radio stations format: {protocol}://{ip address}:{port}
+* https://bandcamp.com/tag/{tagname}
+
+* {protocol}://{ip address}:{port}
 
 =item B<--stream-out>=I<destination>
 
@@ -1504,13 +2180,13 @@ same as B<--verbose=3>. you may use B<-vvv> for B<--verbose=4> a.s.o.
 
 =item B<--verbose, -v>
 
-same as B<--verbose=1>.
+same as B<--verbose=2>.
 
 =back
 
 =head1 LICENCE
 
-Copyright (c) 2016, seth
+Copyright (c) 2017, seth
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
