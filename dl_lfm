@@ -1,6 +1,7 @@
 #!/usr/bin/perl
 # author:  seth
-# description: downloads last.fm user data and scrobbles streams to last.fm
+# description: downloads last.fm user data and scrobbles radio streams and 
+#		bandcamp music to last.fm; 
 #
 # tab-size: 2
 
@@ -12,51 +13,51 @@ use Getopt::Long qw(:config bundling);
 use Pod::Usage;
 use POSIX qw/strftime/;       # format timestamp
 
-$main::VERSION = '0.6';
+$main::VERSION = '0.6.1';
 binmode STDOUT, ":utf8";
 
 # functions
 # =========
 # sub _die
-#		verbose output on errors
+# 	verbose output on errors
 #
 # sub _warn
-#		verbose output on warnings
+# 	verbose output on warnings
 #
 # sub syntaxCheck
-#		check input of user
+# 	check input of user
 #
 # Lastfm_dl: main class 
 # ---------------------
 # sub new
-#		constructor
+# 	constructor
 #
 # sub authenticate
-#		unused: last.fm authentication
+# 	unused: last.fm authentication
 #
-#	sub collect_trackinfos_bandcamp
-#		given an url to a bandcamp album, this function returns information on 
-#		album title, tracks (number, title, duration) and artist in a last.fm
-#		compatible format
+# sub collect_trackinfos_bandcamp
+# 	given an url to a bandcamp album, this function returns information on 
+# 	album title, tracks (number, title, duration) and artist in a last.fm
+# 	compatible format
 #
-#	sub collect_trackinfos_youtube
-#		given an url to a youtube album, this function tries to return information on 
-#		album title, tracks (number, title, duration) and artist in a last.fm
-#		compatible format
+# sub collect_trackinfos_youtube
+# 	given an url to a youtube album, this function tries to return information on 
+# 	album title, tracks (number, title, duration) and artist in a last.fm
+# 	compatible format
 #
-#	sub get_all_user_data
-#		get all important user statistics from last.fm for a given user and save it to 
-#		a json file.
+# sub get_all_user_data
+# 	get all important user statistics from last.fm for a given user and save it to 
+# 	a json file.
 #
-#	sub get_http_content
-#		given an url, a http method (GET or POST) and additional params, this function
-#		returns the content of the page and the http status code
+# sub get_http_content
+# 	given an url, a http method (GET or POST) and additional params, this function
+# 	returns the content of the page and the http status code
 #
-#	sub get_lastfm
-#		wrapper for last.fm api, returns results as a json-like struct
+# sub get_lastfm
+# 	wrapper for last.fm api, returns results as a json-like struct
 #
-#	sub get_mobile_session
-#		login at last.fm as a given user, returns a session key
+# sub get_mobile_session
+# 	login at last.fm as a given user, returns a session key
 #
 # sub get_time_iso
 # 	get date and time as formatted string "%Y-%m-%d%H:%M:%S" from given (or current)
@@ -66,64 +67,64 @@ binmode STDOUT, ":utf8";
 # 	get date and time as formatted string "%Y-%m-%d %H:%M:%S" from given 
 # 	(or current) unix timestamp
 #
-#	sub get_time_mm_ss2s
-#		convert time duration format mm:ss to number of seconds
+# sub get_time_mm_ss2s
+# 	convert time duration format mm:ss to number of seconds
 #
 # sub get_time_unix
 # 	get unix timestamp from iso-like formatted string "%Y-%m-%d %H:%M:%S" 
 # 	(using timelocal or timegm)
 #
 # sub get_token
-#		get a last.fm token
+# 	get a last.fm token
 #
 # sub get_session
-#		unused: get a last.fm session
+# 	unused: get a last.fm session
 #
 # sub get_user_info
-#		unused: get info on a last.fm user
+# 	unused: get info on a last.fm user
 #
 # sub get_user_past_events
-#		get all events that a last.fm user went
+# 	get all events that a last.fm user went
 #
-#	sub load_json_file
-#		load a json file into a perl struct
+# sub load_json_file
+# 	load a json file into a perl struct
 #
 # sub msg
 # 	write some info message to STDOUT
 #
-#	sub save_json_file
-#		save a perl struct to a json file
+# sub save_json_file
+# 	save a perl struct to a json file
 #
 # sub scrobble_forked
-#		non-blocking call of scrobble
+# 	non-blocking call of scrobble
 #
 # sub scrobble
-#		scrobble a given track to the current last.fm profile or update the 
-#		"now playing" track
+# 	scrobble a given track to the current last.fm profile or update the 
+# 	"now playing" track
 #
 # sub scrobble_from_source
-#		handle different kind of music sources:	
-#		bandcamp-album-url, radio stream, json file
+# 	handle different kind of music sources:	
+# 	bandcamp-album-url, radio stream, json file
 #
-#	sub stream_connect
-#		given an url, connect to a http(s)-shoutcast-stream; 
-#		return socket and icy-metadata
+# sub stream_connect
+# 	given an url, connect to a http(s)-shoutcast-stream; 
+# 	return socket and icy-metadata
 #
-#	sub stream_parse_icy_info
-#		given a icy info string, try to get artist and title
+# sub stream_parse_icy_info
+# 	given a icy info string, try to get artist and title
 #
-#	sub stream_read_current_track
-#		after stream_connect, this function reads the stream from the socket.
-#		forwards the pure music stream (w/o icy info) to a given process (like vlc) or
-#		a file.
-#		the icy info is used to scrobble the track into a given last.fm profile.
+# sub stream_read_current_track
+# 	after stream_connect, this function reads the stream from the socket.
+# 	forwards the pure music stream (w/o icy info) to a given process (like vlc) or
+# 	a file.
+# 	the icy info is used to scrobble the track into a given last.fm profile.
 #
-#	sub stream_scrobble_user_interface
-#		a simple user interface can be used to skip/stop scrobbling when using a stream
+# sub stream_scrobble_user_interface
+# 	a simple user interface can be used to skip/stop scrobbling when using a stream
 #
-#	sub youtube_get_video_length{
-#		given a youtube video url, this function returns the length of the video in 
-#		seconds
+# sub youtube_get_video_length{
+# 	given a youtube video url, this function returns the length of the video in 
+# 	seconds
 
 # Carp::Always
 sub _die {
@@ -206,16 +207,16 @@ sub syntaxCheck{
 {
 	package Lastfm_dl;
 	use Data::Dumper;
+	use Digest::MD5 qw(md5_hex);
 	use Encode;
 	use IO::Socket::INET;
 	use JSON;
 	use LWP::UserAgent;         # fast, small web browser
-	use Digest::MD5 qw(md5_hex);
 	use POSIX qw/strftime/;     # format timestamp
-	use URI::Escape;
-	use YAML;
 	use Term::ReadKey;          # used for user input
 	use Time::Local;            # timegm, timelocal
+	use URI::Escape;
+	use YAML;
 
 	sub new{
 		my $class = shift;
@@ -332,7 +333,7 @@ sub syntaxCheck{
 	sub collect_trackinfos_bandcamp{
 		my $self = shift;
 		my $url = shift;
-		$self->msg(1, 'reading bandcamp album page');
+		$self->msg(1, "reading bandcamp album page '$url'");
 		my ($http_status, $content) = $self->get_http_content($url);
 		my $last_fm_struct = [];
 		if($content =~ /\nvar TralbumData = ({\s*\n(?:\s+.*\n)+});/){
@@ -352,7 +353,9 @@ sub syntaxCheck{
 				# set timestamp to (now - album_length)
 				my $timestamp = $self->get_time_unix($self->{'timestamp'}) //
 					$self->get_time_unix($self->{'timestamp-local'}, 'local') // time;
-				$self->msg(1, 'set timestamp (of album end) to ' 
+				# well, this is only relevant when scrobbling a full album, anyway it 
+				# does not really harm other cases.
+				$self->msg(2, 'set timestamp (of album end) to ' 
 					. $self->get_time_iso_($timestamp));
 				for my $t(@$trackinfos){
 					$timestamp -= $t->{'duration'};
@@ -366,7 +369,16 @@ sub syntaxCheck{
 						'chosenByUser' => '1',
 						'trackNumber' => $t->{'track_num'},
 						'duration' => $t->{'duration'},
+						'non_lastfm_url' => $t->{'file'}{'mp3-128'},
+						'non_lastfm_about' => $content->{'current'}{'about'},
 					};
+					if($artist eq 'Various Artists' && $t->{'title'} =~ /^(.*) - (.*)$/){
+						$last_fm_struct->[-1]{'artist'} = $1;
+						$last_fm_struct->[-1]{'track'} = $2;
+					}
+					if(defined $last_fm_struct->[-1]{'non_lastfm_url'}){
+						$last_fm_struct->[-1]{'non_lastfm_url'} =~ s/^\/\//https:\/\//;
+					}
 					$timestamp += $t->{'duration'};
 				}
 			}else{
@@ -385,8 +397,12 @@ sub syntaxCheck{
 		# tested with https://www.youtube.com/watch?v=BfZ37gpeY7A
 		my ($http_status, $content) = $self->get_http_content($url);
 		my $last_fm_struct = [];
-		# alternative could be using https://www.googleapis.com/youtube/v3/videos?part=snippet&id=...&key=AIzaSyBSTDQ1Y6eM9Ci8hMdRo8nLbnISc6eopC4
-		if($content =~ /<title>(.*?) - (.*?) (?i:[(\[]?full album[)\]]? )?- YouTube<\/title>/){
+		# alternative could be using 
+		# https://www.googleapis.com/youtube/v3/videos?part=snippet&id=...
+		#		&key=AIzaSyBSTDQ1Y6eM9Ci8hMdRo8nLbnISc6eopC4
+		if($content =~ 
+			/<title>(.*?) - (.*?) (?i:[(\[]?full album[)\]]? )?- YouTube<\/title>/
+		){
 			my $artist = $1;
 			my $album_title = $2;
 			if($content =~ /<p id="eow-description"[^>]*>(.*)/){
@@ -395,10 +411,13 @@ sub syntaxCheck{
 				my $counter = 1;
 				for my $line(@description){
 					$line =~s /<a [^>]+>|<\/a>//g;
-					if($line =~ /^(?i:track |)0?$counter[.: ]*"([^"]+)" \s*([0-9]{1,2}[:.][0-9]{2})/){
+					if($line =~ 
+						/^(?i:track |)0?$counter[.: ]*"([^"]+)" \s*([0-9]{1,2}[:.][0-9]{2})/
+					){
 						my $duration = $self->get_time_mm_ss2s($2) // 0;
 						if($counter > 1){
-							$trackinfos->[-1]{'duration'} = $duration - $trackinfos->[-1]{'duration'};
+							$trackinfos->[-1]{'duration'} = 
+								$duration - $trackinfos->[-1]{'duration'};
 						}
 						push @$trackinfos, {
 							'track' => $1,
@@ -898,54 +917,59 @@ sub syntaxCheck{
 	}
 
 	sub scrobble{
-		my $self        = shift;
-		my $track_hash  = shift;
-		my $now_playing = shift;
+		my $self            = shift;
+		my $track_hash_orig = shift;
+		my $now_playing     = shift;
 		my $die_after_scrobbling = 0;
-		if($track_hash->{'artist'} and $track_hash->{'track'}){
+		if(defined $track_hash_orig->{'artist'} && defined $track_hash_orig->{'track'}){
+			my %track_hash = %$track_hash_orig;
 			unless(defined $self->get_mobile_session()){
 				$self->msg(0, 'could not get a session key', 'error');
 				die;
 			}
-			if(defined $track_hash->{'timestamp'}){
+			# delete non-lastfm information
+			map {delete $track_hash{$_}} grep {/^non_lastfm_/} keys %track_hash;
+			# generate/convert timestamp
+			if(defined $track_hash{'timestamp'}){
 				# cope with iso time format
-				if($track_hash->{'timestamp'} =~ 
+				if($track_hash{'timestamp'} =~ 
 					/^[0-9]{4}(?:-[0-9]{2}){2}[ T](?:[0-9]{2}:?){2}[0-9]{2}$/){
-					$track_hash->{'timestamp'} = 
-						$self->get_time_unix($track_hash->{'timestamp'});
+					$track_hash{'timestamp'} = 
+						$self->get_time_unix($track_hash{'timestamp'});
 				}
 			}else{
-				$track_hash->{'timestamp'} = time;
+				$track_hash{'timestamp'} = time;
 			}
-			if(defined $track_hash->{'duration'}){
-				if($track_hash->{'duration'} == 0){
+			if(defined $track_hash{'duration'}){
+				if($track_hash{'duration'} == 0){
 					$self->msg(0, 'duration of track is 0. this will lead to errors in ' 
 						. 'scrobbling. quitting after this scrobbling', 'error');
-					delete $track_hash->{'duration'};
+					delete $track_hash{'duration'};
 					$die_after_scrobbling = 1;
-				}elsif($track_hash->{'duration'} <= 30){
+				}elsif($track_hash{'duration'} <= 30){
 					$self->msg(0, 'duration of track is smaller than 30 seconds and thus '
 						. 'would not be scrobbled by last.fm. so I\'m deleting the information '
 						. 'about the duration', 'warning');
-					delete $track_hash->{'duration'};
+					delete $track_hash{'duration'};
 				}
 			}
-			if($track_hash->{'track'} =~ /^[Uu]nknown$/){
-				$track_hash->{'track'} .= ' (sic!)';
+			if($track_hash{'track'} =~ /^[Uu]nknown$/){
+				$track_hash{'track'} .= ' (sic!)';
 			}
 			# print info on track
 			my $info_string = $now_playing ? 'updating "now playing" with' : 'scrobbling';
 			$info_string .= " track " 
-				. "'$track_hash->{'artist'}' -- '$track_hash->{'track'}'";
-			if(defined $track_hash->{'trackNumber'} and defined $track_hash->{'album'}){
-				$info_string .= " ($track_hash->{'trackNumber'} " 
-				. "on '$track_hash->{'album'}')";
+				. "'$track_hash{'artist'}' -- '$track_hash{'track'}'";
+			if(defined $track_hash{'trackNumber'} and defined $track_hash{'album'}){
+				$info_string .= " ($track_hash{'trackNumber'} " 
+				. "on '$track_hash{'album'}')";
 			}
-			if(defined $track_hash->{'duration'}){
-				$info_string .= " $track_hash->{'duration'}s";
+			if(defined $track_hash{'duration'}){
+				$info_string .= " $track_hash{'duration'}s";
 			}
-			if(defined $track_hash->{'timestamp'}){
-				$info_string .= ' at ' . $self->get_time_iso_($track_hash->{'timestamp'}) . ' UTC';
+			if(defined $track_hash{'timestamp'}){
+				$info_string .= ' at ' . $self->get_time_iso_($track_hash{'timestamp'}) 
+					. ' UTC';
 			}
 			$self->msg(1, $info_string);
 			# scrobble
@@ -953,9 +977,10 @@ sub syntaxCheck{
 				$self->msg(2, 'simulation only');
 			}else{
 				my $json = $self->get_lastfm({
-						'method' => ($now_playing ? 'track.updatenowplaying' : 'track.scrobble'),
+						'method' => 
+							($now_playing ? 'track.updatenowplaying' : 'track.scrobble'),
 						'sk' => $self->{'session_key'},
-						%$track_hash,
+						%track_hash,
 					}, 1, 'POST'
 				);
 				# parse response for acceptance and corrections
@@ -974,7 +999,9 @@ sub syntaxCheck{
 						$sc = $sc->{'scrobble'};
 					}
 					for my $field('album', 'artist', 'track'){
-						if(defined $sc->{$field}{'corrected'} && $sc->{$field}{'corrected'} == 1){
+						if(defined $sc->{$field}{'corrected'}
+							&& $sc->{$field}{'corrected'} == 1
+						){
 							$self->msg(1, "field '$field' corrected to '$sc->{$field}{'#text'}'");
 						}
 					}
@@ -988,16 +1015,13 @@ sub syntaxCheck{
 				. ($now_playing ? 'update "now playing"' : 'scrobble')
 				. '. artist or track name missing', 'warning');
 		}
-		if($die_after_scrobbling){
-			$self->msg(1, 'exiting because of previous error');
-			exit 1;
-		}
+		die 'exiting because of previous error' if $die_after_scrobbling;
 		return 1;
 	}
 
 	sub scrobble_from_source{
-		my $self   = shift;
-		my $source = shift;
+		my $self     = shift;
+		my $source   = shift;
 		if($source =~ /^star\s*fm\s*berlin$/i){
 			$source = 'https://berlin.starfm.de/player/pls/berlin_pls_mp3.php';
 		}elsif($source =~ /^star\s*fm\s*alternative$/i){
@@ -1008,11 +1032,12 @@ sub syntaxCheck{
 			$source = 'https://berlin.starfm.de/player/pls/classic_rock_pls_mp3.php';
 		}
 		my $scrobble_data;
+		my $radio;
 		if(defined $source){
 			if(-e $source){ # treat files as a json source
 				$scrobble_data = $self->load_json_file($source);
 			}elsif($source =~ /^https?:\/\//){
-				if($source =~ /^https?:\/\/(?:[a-z0-9_-]+\.)?bandcamp\.com\//){
+				if($source =~ /^https?:\/\/(?!www\.)[a-z0-9_-]+\.bandcamp\.com\//){
 					# bandcamp album page
 					$scrobble_data = {
 						'tracks' => $self->collect_trackinfos_bandcamp($source)
@@ -1038,13 +1063,15 @@ sub syntaxCheck{
 							$self->stream_read_current_track($icy_metaint);
 						}
 					}
+					$radio = 1;
 				}
-				unless(defined $scrobble_data){
+				unless(defined $radio || defined $scrobble_data){
 					$self->msg(0, "don't know how to use the url '$source'" . 
 						' or could not connect to it.', 'error');
 				}
 			}else{
-				$self->msg(0, 'could not read source, use param --help for more info', 'error');
+				$self->msg(0, 'could not read source, use param --help for more info', 
+					'error');
 			}
 		}
 		if(defined $scrobble_data){
@@ -1145,13 +1172,14 @@ sub syntaxCheck{
 		my $byte_inc = (defined($icy_metaint) && $byte_inc_default >= $icy_metaint)
 			? $icy_metaint : $byte_inc_default; 
 		my $info = '';
-		open(HANDLER, $outstream) 
+		open(my $HANDLER, $outstream) 
 			or die "error: cannot pipe input to '" . substr($outstream, 1) . "': $!\n";
 		$self->msg(1, "redirecting HTTP filestream to '$outstream'");
 		my %last_track = ('artist' => '', 'track' => '');
 		my $socket = $self->{'socket'};
 		unless(defined $socket){
-			$self->msg(0, 'socket not defined. did you call stream_connect already?', 'error');
+			$self->msg(0, 'socket not defined. did you call stream_connect already?', 
+				'error');
 			return 0;
 		}
 		$SIG{'CHLD'} = 'IGNORE'; # avoid creating zombies with fork
@@ -1167,7 +1195,7 @@ sub syntaxCheck{
 			$stats{'music_bytes'} += $byte_inc;
 			#printf "read %d, %d\n", length($content), $byte_inc;
 			$state = $self->stream_scrobble_user_interface(\%last_track, $state, \%stats);
-			print HANDLER $content;
+			print $HANDLER $content;
 			if(defined $icy_metaint){
 				$byte_count += $byte_inc;
 				if($byte_count == $icy_metaint){
@@ -1220,7 +1248,7 @@ sub syntaxCheck{
 			}
 		}
 		ReadMode('restore') if defined &ReadMode;
-		close HANDLER;
+		close $HANDLER;
 		$socket->close;
 		return 1;
 	}
@@ -1292,7 +1320,7 @@ sub syntaxCheck{
 		my $api_key = 'AIzaSyBSTDQ1Y6eM9Ci8hMdRo8nLbnISc6eopC4';
 		my $length;
 		# extract youtube video id
-		if($url =~ /youtube\.com\/watch\?v=([a-zA-Z0-9]+)/ or $url =~ /youtube\.com\/v\/([a-zA-Z0-9]+)/){
+		if($url =~ /youtube\.com\/(?:watch\?v=|v\/)([a-zA-Z0-9]+)/){
 			my $id = $1;
 			my $content = $self->get_http_content(
 				'https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=' 
@@ -1300,8 +1328,11 @@ sub syntaxCheck{
 			$content = JSON::from_json($content);
 			if(defined $content->{'items'}[0]{'contentDetails'}{'duration'}){
 				$length = $content->{'items'}[0]{'contentDetails'}{'duration'};
-				if($length =~ /^P(?:([0-9]+D|))T(?:([0-9]+)H|)(?:([0-9]+)M|)(?:([0-9]+)S|)$/){
-					$length = ((($1 // 0) * 24 + ($2 // 0)) * 60 + ($3 // 0)) * 60 + ($4 // 0);
+				if($length =~ 
+					/^P(?:([0-9]+D|))T(?:([0-9]+)H|)(?:([0-9]+)M|)(?:([0-9]+)S|)$/
+				){
+					$length = ((($1 // 0) * 24 + ($2 // 0)) * 60 + ($3 // 0)) * 60 
+						+ ($4 // 0);
 				}else{
 					$self->msg(0, 'could not extract youtube video length', 'error');
 				}
@@ -1344,7 +1375,6 @@ if(defined $params->{'scrobble'}){
 		or die "could not login at last.fm with given credentials\n";
 	$lfm_dl->scrobble_from_source($params->{'scrobble'});
 }
-
 
 __END__
 
@@ -1429,7 +1459,8 @@ supported radio stations format: {protocol}://{ip address}:{port}
 
 =item B<--stream-out>=I<destination>
 
-if scrobbling to a stream (see B<--scrobble>), then this param can be used to adjust the destination where the stream data shall forwarded to.
+if scrobbling to a stream (see B<--scrobble>), then this param can be used to adjust
+the destination where the stream data shall forwarded to.
 
 default: I<destination> = '| vlc -', i.e., the stream data will be piped '|' to a 
 new instance of vlc, where the parameter '-' means, that vlc will read the stream 
@@ -1469,7 +1500,7 @@ same as B<--verbose=0>.
 
 =item B<--very-verbose, -vv>
 
-same as B<--verbose=2>. you may use B<-vvv> for B<--verbose=3> a.s.o.
+same as B<--verbose=3>. you may use B<-vvv> for B<--verbose=4> a.s.o.
 
 =item B<--verbose, -v>
 
