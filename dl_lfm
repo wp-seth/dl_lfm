@@ -2100,11 +2100,11 @@ example:
     same as above but sets the scrobbling timestamp as if you had finished 
     listening to the album at 2016-01-01 12:34 UTC.
 
-  dl_lfm --radio='https://bandcamp.com/tags/progressivepostfuneraldoommetal' 
+  dl_lfm --radio='https://bandcamp.com/tag/progressivepostfuneraldoommetal' 
 
     plays random tracks of given tags from bandcamp.com. uses mplayer for playing.
 
-  dl_lfm --radio='https://bandcamp.com/tags/progressivepostfuneraldoommetal' 
+  dl_lfm --radio='https://bandcamp.com/tag/progressivepostfuneraldoommetal' 
   --user="cutelittlesquirrel"
 
     plays random tracks of given tags from bandcamp.com and scrobbles them to 
