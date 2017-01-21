@@ -287,6 +287,7 @@ sub syntaxCheck{
 			'in'      => undef,
 			'mplayer' => 'mplayer',
 			'played'  => [],
+			'retval'  => undef, # only filled, but not used yet
 			'stdout'  => [],
 			'verbose' => $params->{'verbose'} // 1,
 		}, $class;
@@ -332,11 +333,13 @@ sub syntaxCheck{
 
 	sub get_pos{
 		my $self = shift;
+		my $min_verbosity = shift // 3;
 		my $pos;
-		my $min_verbosity = 3;
-		$self->cmd('get_time_pos', $min_verbosity);
-		if($self->{'last_stdout_line'} =~ /ANS_TIME_POSITION='(.*)'/){
-			$pos = $1;
+		if($self->is_running){
+			$self->cmd('get_time_pos', $min_verbosity);
+			if($self->{'last_stdout_line'} =~ /ANS_TIME_POSITION='(.*)'/){
+				$pos = $1;
+			}
 		}
 		#$pos->{'file'} = $self->get_current_file($min_verbosity);
 		#$self->cmd('get_percent_pos', $min_verbosity);
@@ -538,11 +541,12 @@ sub syntaxCheck{
 			$self->cmd('quit');
 			finish $self->{'handle'};
 			undef $self->{'handle'};
-			return $?/256;
+			$self->{'retval'} = $?/256;
+			return 1;
 		}else{
 			$self->msg(0, 'mplayer is not running, so cannot be exited', 'warning');
 		}
-		return -1;
+		return 0;
 	}
 
 	sub run{
@@ -572,8 +576,8 @@ sub syntaxCheck{
 		){
 			$pos_old = $pos // 0;
 			$self->mplayer_keypress;
-			usleep 300_000;
-			#print Dumper [$pos, $pos_old];
+			# must not be less than 100k, because mplayers output frequency is about 10Hz
+			usleep 300_000; 
 		}
 		ReadMode('restore') if defined &ReadMode;
 		return 1;
@@ -599,13 +603,15 @@ sub syntaxCheck{
 			$file_wo_path = $1;
 		}
 		ReadMode('cbreak') if defined &ReadMode;
+		my $wait_ns = 100_000;
 		my $undef_counter = 0;
+		my $counter_max = 5 * 1e7 / $wait_ns; # 5 seconds
 		my $curr_file;
 		while(
 			$self->is_running() # while mplayer is running and 
-			&& $undef_counter < 50 # current track is not undefined for >5 seconds and
-			# current track is not track we are waiting for
-			&& (!defined($curr_file) 
+			&& $undef_counter < $counter_max # current track is not undefined for >5 
+			# seconds and 
+			&& (!defined($curr_file) # current track is not track we are waiting for
 				|| ($curr_file ne $file_w_path && $curr_file ne $file_wo_path)
 			)
 		){
@@ -615,7 +621,7 @@ sub syntaxCheck{
 				++$undef_counter;
 			}
 			$self->mplayer_keypress;
-			usleep 500_000; # TODO: 100_000
+			usleep $wait_ns;
 			$curr_file = $self->get_current_file();
 		}
 		ReadMode('restore') if defined &ReadMode;
@@ -631,15 +637,15 @@ sub syntaxCheck{
 	package Lastfm_dl;
 	use Data::Dumper;
 	use Digest::MD5 qw(md5_hex);
-	use Encode;
-	use IO::Socket::INET;
-	use JSON;
+	use Encode;                 # encode
+	use IO::Socket::INET;       # for receiving radio stream
+	use JSON;                   # JSON::from_json
 	use LWP::UserAgent;         # fast, small web browser
 	use MP3::Tag;               # write mp3 tags
 	use POSIX qw/strftime/;     # format timestamp
 	use Term::ReadKey;          # used for user input
 	use Time::Local;            # timegm, timelocal
-	use URI::Escape;
+	use URI::Escape;            # uri_escape_utf8
 	use YAML;
 
 	sub new{
@@ -647,6 +653,7 @@ sub syntaxCheck{
 		my $params = shift;
 		my $self = bless {
 			'api_key'       => '33068e0258f716d75a8265da4c71d2b2',
+			'dl_path'       => 'downloaded_music',
 			'lastfm_root'   => 'https://ws.audioscrobbler.com/2.0/',
 			'mplayer'       => undef,
 			'password'      => $params->{'password'},
@@ -768,9 +775,8 @@ sub syntaxCheck{
 		my $trackinfo = shift;
 		my $filename; 
 		if(defined $trackinfo->{'non_lastfm_url'}){
-			my $dl_path = 'downloaded_music';
-			mkdir $dl_path;
-			my $readme_file = "$dl_path/readme.txt";
+			mkdir $self->{'dl_path'};
+			my $readme_file = "$self->{'dl_path'}/readme.txt";
 			unless(-f $readme_file){
 				if(open(my $OUTFILE, '>', $readme_file)){
 					print $OUTFILE 'this directory contains the mp3 files of the bandcamp ';
@@ -784,8 +790,9 @@ sub syntaxCheck{
 					$self->msg(0, "$!: '$readme_file'", 'error');
 				}
 			}
-			mkdir 'downloaded_music/' . $self->delete_ugly_chars($trackinfo->{'artist'});
-			my $dir = 'downloaded_music/' 
+			mkdir $self->{'dl_path'} . '/' 
+				. $self->delete_ugly_chars($trackinfo->{'artist'});
+			my $dir = $self->{'dl_path'} . '/' 
 				. $self->delete_ugly_chars($trackinfo->{'artist'}) . '/' 
 				. $self->delete_ugly_chars($trackinfo->{'album'});
 			mkdir $dir;
@@ -797,7 +804,7 @@ sub syntaxCheck{
 			);
 			if(-e $filename){
 				$self->msg(1, "file '$filename' exists already");
-			}else{
+			}else{ # download track
 				my $cmd = "wget '$trackinfo->{'non_lastfm_url'}' -O '$filename'";
 				$self->msg(1, $cmd);
 				unless($self->{'simulate'}){
@@ -847,7 +854,7 @@ sub syntaxCheck{
 			$num_pages = $max_num - $first_page + 1;
 			$self->msg(3, "number of tag pages = $num_pages, first page = $first_page");
 			my @last_tracks = ();
-			# loop forever and play random tracks and scrobble them
+			# play random tracks and scrobble them until mplayer stops
 			if($play){
 				$self->{'mplayer'} = MPlayerWrapper->new({
 						'verbose' => $self->{'verbose'},
@@ -886,7 +893,7 @@ sub syntaxCheck{
 						$self->msg(2, 'play list = ' . Dumper(\@last_tracks));
 						# play and scrobble track
 						$self->{'mplayer'}->enqueue($filename) if $play;
-						$self->msg(2, 'play list in mplayer = ' 
+						$self->msg(3, 'play list in mplayer = ' 
 							. Dumper($self->{'mplayer'}->{'played'}));
 						if(!$play || $self->{'mplayer'}->wait_for_last_track()){
 							if(@last_tracks > 0){
@@ -901,10 +908,6 @@ sub syntaxCheck{
 						. "maybe you should just try again.", 'error');
 				}
 			}
-			#$mplayer->wait_for_end;
-			#my $retval = $mplayer->quit;
-			#print " retval = $retval\n";
-			#$self->msg(1, "not done yet");
 		}else{
 			$self->msg(0, "could not read bandcamp tag url '$url'", 'error');
 		}
@@ -2036,10 +2039,11 @@ dl_lfm has several functions, it
 
 * downloads a last.fm profile
 
-* helps scrobbling from json files, radio stations or some webpages 
-(supported: bandcamp.com and experimentally youtube.com)
+* helps scrobbling from json files, radio streaming stations (using vlc) or some 
+webpages (supported: bandcamp.com and experimentally youtube.com)
 
-* plays and scrobbles randomly picked tracks from bandcamp.com like a radio
+* plays and scrobbles randomly picked tracks from bandcamp.com like a radio 
+(needs mplayer installed)
 
 =head1 SYNOPSIS
 
@@ -2050,14 +2054,18 @@ dl_lfm [options]
       --password-file=string  a file containing your last-fm password
   -r  --radio=src             use radio station to play some tracks; if --user is 
                                set, then tracks will be scrobbled, see --man for 
-                               suported urls
+                               suported urls; needs mplayer for bandcamp.
   -s  --scrobble=src          use this file or radio station to scrobble some tracks
                                without playing them, see --man for suported file 
                                types and urls
       --stream-out=dest       use this destination to send the stream to 
                                (if scrobbling from stream), default = '| vlc -'
-  -u, --user=string           username
   -t, --test                  don't scrobble anything, simulate only
+      --timestamp=string      set timestamp (UTC) of album end, when scrobbling from 
+                               bandcamp.com or yaml file; treat string as UTC timestamp string
+      --timestamp-local=str   same as --timestamp, but treat str as local timestamp
+                               (not UTC)
+  -u, --user=string           username
 
 meta:
 
@@ -2075,8 +2083,32 @@ meta:
 example:
 
   dl_lfm --dl --user='testtesttest123123123'
+
     gets all public information on user 'testtesttest123123123' from last.fm 
     and saves that data into several files.
+
+  dl_lfm --scrobble='https://someincredibleband.bandcamp/album/someawsomealbum' 
+  --user="testtest123123"
+
+    scrobbles given album to last.fm profile of user 'testtest12123'. the 
+    scrobbling timestamps will be set as if you had just now finished listening to
+    the album. tracks will not be played.
+
+  dl_lfm --scrobble='https://someincredibleband.bandcamp/album/someawsomealbum' 
+  --user="testtest123123" --timestamp='2016-01-01 12:34'
+
+    same as above but sets the scrobbling timestamp as if you had finished 
+    listening to the album at 2016-01-01 12:34 UTC.
+
+  dl_lfm --radio='https://bandcamp.com/tags/progressivepostfuneraldoommetal' 
+
+    plays random tracks of given tags from bandcamp.com. uses mplayer for playing.
+
+  dl_lfm --radio='https://bandcamp.com/tags/progressivepostfuneraldoommetal' 
+  --user="cutelittlesquirrel"
+
+    plays random tracks of given tags from bandcamp.com and scrobbles them to 
+    last.fm profile of user cutelittlesquirrel.
 
 =head1 OPTIONS
 
@@ -2135,7 +2167,7 @@ supported urls or radio streaming stations:
 
 =item B<--stream-out>=I<destination>
 
-if scrobbling to a stream (see B<--scrobble>), then this param can be used to adjust
+if playing a radio stream (see B<--radio>), then this param can be used to adjust
 the destination where the stream data shall forwarded to.
 
 default: I<destination> = '| vlc -', i.e., the stream data will be piped '|' to a 
