@@ -455,14 +455,23 @@ sub syntaxCheck{
 		my $msg  = shift;
 		my @complete_msgs = split /[\n\r]+/, $msg;
 		for my $cmsg(@complete_msgs){
+			utf8::decode($cmsg); # don't know, whether this is correct here.
 			chomp($cmsg);
 			if($self->{'last_' . $type . '_line'} ne $cmsg){
 				push @{$self->{$type}}, $cmsg;
 				$self->{'last_' . $type . '_line'} = $cmsg;
 				$cmsg =~ s/^/$type: /mg;
 				if($type eq 'stderr'){
-					$cmsg =~ s/^stderr:/mpl_err:/;
-					$self->msg(0, $cmsg);
+					if($self->{'verbose'} > 1	
+						|| (
+							$cmsg !~ /^sterr: Failed to open LIRC/
+							&& $cmsg !~ /^sterr: Requested audio codec family .* not available\./
+							&& $cmsg !~ /^sterr: Enable it at compilation\./
+						)
+					){
+						$cmsg =~ s/^stderr:/mpl_err:/;
+						$self->msg(0, $cmsg);
+					}
 				}else{ # stdout
 					if($self->{'verbose'} > 2 
 						|| (
@@ -820,10 +829,10 @@ sub syntaxCheck{
 	}
 
 	sub bandcamp_radio{
-		my $self = shift;
-		my $url = shift;
+		my $self     = shift;
+		my $url      = shift;
 		my $scrobble = shift;
-		my $play = shift;
+		my $play     = shift;
 		# https://bandcamp.com/tag/metal?page=2&sort_field=pop
 		my $success = 0;
 		my $bandcamp_tag_base_path = 'https://bandcamp.com/tag';
@@ -1913,14 +1922,14 @@ sub syntaxCheck{
 					$stats->{'played'}[-1]{'time'} = time();
 				}
 				$state = 'skip';
-			}elsif($key eq 'n'){
-				$self->msg(1, 'no scrobbling from now on.');
+			}elsif($key eq 'd'){
+				$self->msg(1, 'deactivate scrobbling');
 				$state = 'no scrobble';
 			}elsif($key eq 'k'){
 				$self->msg(1, 'skip scrobbling of current track');
 				$state = 'skip';
-			}elsif($key eq 's'){
-				$self->msg(1, 'scrobbling from now on.');
+			}elsif($key eq 'a'){
+				$self->msg(1, 'activate scrobbling');
 				$state = 'scrobble';
 			}elsif($key eq 't'){
 				my $time_playing = time() - $stats->{'start_time'};
@@ -1951,10 +1960,10 @@ sub syntaxCheck{
 				);
 				$self->msg(1, '-'x72); 
 			}else{
+				$self->msg(1, 'a - Activate scrobbling');
+				$self->msg(1, 'd - Deactivate scrobbling');
 				$self->msg(1, 'i - Immediately scrobble current track');
-				$self->msg(1, 'n - No scrobbling');
 				$self->msg(1, 'k - sKip scrobbling for current track');
-				$self->msg(1, 's - Scrobbling');
 				$self->msg(1, 't - sTatistics');
 			}
 		}
