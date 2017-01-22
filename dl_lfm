@@ -714,7 +714,7 @@ sub syntaxCheck{
 		}
 		my $wait_ns = 100_000;
 		my $undef_counter = 0;
-		my $counter_max = 5 * 1e7 / $wait_ns; # 5 seconds
+		my $counter_max = 5 * 1e6 / $wait_ns; # 5 seconds
 		my $curr_file;
 		# key-press handling has to be done outside of this function, see wait_for_end
 		while(
@@ -738,7 +738,7 @@ sub syntaxCheck{
 			my $pause_counter = 0;
 			while(-f $self->{'pause_file'}){
 				if($pause_counter == 0 
-					|| $pause_counter >= 60 * 1e7 / $wait_ns){
+					|| $pause_counter >= 10 * 60 * 1e6 / $wait_ns){
 					$self->msg(1, "pausing (press SPACE to continue)");
 					$pause_counter = 0;
 				}
@@ -1007,7 +1007,7 @@ sub syntaxCheck{
 		my @last_tracks = ();
 		while($self->{'mplayer'}->is_running){
 			# get random page (rebuild url)
-			$self->msg(1, "get a random tag page from $first_page to " 
+			$self->msg(2, "get a random tag page from $first_page to " 
 				. ($first_page + $num_pages - 1));
 			$params->{'page'} = $first_page + int(rand($num_pages));
 			$self->msg(2, "chose random page $params->{'page'}");
