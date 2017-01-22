@@ -48,7 +48,7 @@ binmode STDOUT, ":utf8";
 # 	look for mplayer, set internal path to mplayer
 # sub is_running
 # 	return 1 if mplayer is running
-# sub mplayer_keypress
+# sub keypress_handler
 # 	tries to imitate some mplayer shortcut bindings
 # 	returns undef if no key is pressed, 0 if key is unknown, 1 if key is known
 # sub mplayer_std_handler
@@ -78,6 +78,12 @@ binmode STDOUT, ":utf8";
 #
 # sub authenticate
 # 	unused: last.fm authentication
+#
+# sub bandcamp_dl_album_random_track
+#		download a random track of a given album
+#
+# sub bandcamp_dl_track
+#		download a track from bandcamp.com
 #
 # sub bandcamp_radio
 # 	play bandcamp music like a radio station
@@ -159,6 +165,9 @@ binmode STDOUT, ":utf8";
 # 	handle different kind of music sources:	
 # 	bandcamp-album-url, radio stream, json file
 #
+# sub scrobble_keypress_handler
+# 	a simple user interface can be used to skip/stop scrobbling when using a stream
+#
 # sub set_mp3_tags
 # 	for a given file set mp3 tags via lastfm struct
 #
@@ -174,9 +183,6 @@ binmode STDOUT, ":utf8";
 # 	forwards the pure music stream (w/o icy info) to a given process (like vlc) or
 # 	a file.
 # 	the icy info is used to scrobble the track into a given last.fm profile.
-#
-# sub stream_scrobble_user_interface
-# 	a simple user interface can be used to skip/stop scrobbling when using a stream
 #
 # sub youtube_get_video_length{
 # 	given a youtube video url, this function returns the length of the video in 
@@ -240,12 +246,14 @@ sub syntaxCheck{
 		'timestamp-local' => undef, # timestamp in local time for scrobbling
 		'stream-out'    => '| vlc -', # the destination for streaming data
 		'test'          => undef, # testing only
+		'keep'          => 0,     # keep downloaded tracks (when listending to bandcamp radio)
 		'user'          => undef, # user-name
 		'verbose'       => 1,     # trace; grade of verbosity
 		'version'       => 0,     # diplay version and exit
 	);
 	GetOptions(\%params,
 		"dl",
+		"keep",
 		"password=s",
 		"password-file=s",
 		"radio|r=s",
@@ -396,7 +404,7 @@ sub syntaxCheck{
 		return defined $self->{'handle'};
 	}
 
-	sub mplayer_keypress{
+	sub keypress_handler{
 		my $self = shift;
 		my $seq  = shift;
 		my $return_value;
@@ -637,7 +645,7 @@ sub syntaxCheck{
 		){
 			$pos_old = $pos // 0;
 			my $seq = $self->read_key;
-			$self->mplayer_keypress($seq);
+			$self->keypress_handler($seq);
 			# must not be less than 100k, because mplayers output frequency is about 10Hz
 			usleep 300_000; 
 		}
@@ -729,6 +737,7 @@ sub syntaxCheck{
 		my $self = bless {
 			'api_key'       => '33068e0258f716d75a8265da4c71d2b2',
 			'dl_path'       => 'downloaded_music',
+			'keep_dl'       => $params->{'keep'},
 			'lastfm_root'   => 'https://ws.audioscrobbler.com/2.0/',
 			'mplayer'       => undef,
 			'password'      => $params->{'password'},
@@ -849,7 +858,8 @@ sub syntaxCheck{
 		my $tracks = shift;
 		my @dl_tracks = grep {defined $_->{'non_lastfm_url'}} @$tracks;
 		my $random_track = $dl_tracks[int(rand(scalar(@dl_tracks)))];
-		return ($random_track, $self->bandcamp_dl_track($random_track));
+		$random_track->{'non_lastfm_file'} = $self->bandcamp_dl_track($random_track);
+		return $random_track;
 	}
 
 	sub bandcamp_dl_track{
@@ -888,6 +898,7 @@ sub syntaxCheck{
 				$self->msg(1, "file '$filename' exists already");
 			}else{ # download track
 				my $cmd = "wget '$trackinfo->{'non_lastfm_url'}' -O '$filename'";
+				push @_clean_up_files, $filename unless $self->{'keep_dl'};
 				$self->msg(2, $cmd);
 				unless($self->{'simulate'}){
 					$cmd .= ' -q' if $self->{'verbose'} < 3;
@@ -964,8 +975,8 @@ sub syntaxCheck{
 						$albums[int(rand(scalar(@albums)))]);
 					# download random track from album
 					$self->msg(1, "choose random track and download");
-					my ($random_track, $filename) = 
-						$self->bandcamp_dl_album_random_track($tracks);
+					my $random_track = $self->bandcamp_dl_album_random_track($tracks);
+					my $filename = $random_track->{'non_lastfm_file'};
 					if(defined $filename){
 						$self->msg(3, "chose random track '$filename'");
 						$random_track->{'timestamp'} = undef;
@@ -996,23 +1007,30 @@ sub syntaxCheck{
 								ReadMode('cbreak') if defined &ReadMode;
 								while(waitpid($pid, POSIX::WNOHANG) == 0){
 									my $seq = $self->{'mplayer'}->read_key;
-									$self->{'mplayer'}->mplayer_keypress($seq);
-									$self->stream_scrobble_user_interface($last_tracks[0], $seq);
+									$self->{'mplayer'}->keypress_handler($seq);
+									$self->scrobble_keypress_handler($last_tracks[0], $seq);
 									usleep 100_000;
 								}
 								ReadMode('restore') if defined &ReadMode;
+								my $removed_first_of_last_tracks;
 								if($self->get_state eq 'scrobble'){
 									if(@last_tracks > 0 && defined $self->{'session_key'}){
-										$self->scrobble_forked(shift @last_tracks);
+										$removed_first_of_last_tracks = shift @last_tracks;
+										$self->scrobble_forked($removed_first_of_last_tracks);
 									}
 								}else{
 									# if state was 'skip', then don't scrobble, but reset state 
 									#  to 'scrobble' for next track.
 									$self->msg(2, 'skip scrobbling');
 									if($self->get_state eq 'skip'){
-										shift @last_tracks;
+										$removed_first_of_last_tracks = shift @last_tracks;
 										$self->set_state('scrobble');
 									}
+								}
+								# clean up
+								if(defined $removed_first_of_last_tracks && !$self->{'keep_dl'}){
+									my $filename = $removed_first_of_last_tracks->{'non_lastfm_file'};
+									unlink $filename if -f $filename;
 								}
 							}
 						}
@@ -1983,7 +2001,7 @@ sub syntaxCheck{
 			$self->{'stats'}{'music_bytes'} += $byte_inc;
 			#printf "read %d, %d\n", length($content), $byte_inc;
 			my $seq = $self->{'mplayer'}->read_key;
-			$self->stream_scrobble_user_interface(\%last_track, $seq);
+			$self->scrobble_keypress_handler(\%last_track, $seq);
 			print $HANDLER $content if $self->{'play_radio'};
 			if(defined $icy_metaint){
 				$byte_count += $byte_inc;
@@ -2042,7 +2060,7 @@ sub syntaxCheck{
 		return 1;
 	}
 
-	sub stream_scrobble_user_interface{
+	sub scrobble_keypress_handler{
 		my $self = shift;
 		my $last_track = shift;
 		my $seq = shift;
@@ -2138,6 +2156,7 @@ sub syntaxCheck{
 # main
 my $params = syntaxCheck(@ARGV);
 my $lfm_dl = Lastfm_dl->new({
+		'keep'            => $params->{'keep'},
 		'password'        => $params->{'password'},
 		'password-file'   => $params->{'password-file'},
 		'play-radio'      => defined($params->{'radio'}),
@@ -2191,6 +2210,8 @@ webpages (supported: bandcamp.com and experimentally youtube.com)
 dl_lfm [options]
 
       --dl                    download all data from user (requires -u)
+      --keep                  when using bandcamp radio, keep downloaded files 
+                               (default: delete after playing)
       --password=string       password
       --password-file=string  a file containing your last-fm password
   -r  --radio=src             use radio station to play some tracks; if --user is 
