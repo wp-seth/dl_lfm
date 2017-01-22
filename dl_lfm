@@ -25,6 +25,16 @@ binmode STDOUT, ":utf8";
 # sub _warn
 # 	verbose output on warnings
 #
+# sub _cleanup
+# 	clean up everything before leaving
+#
+# sub _cleanup_and_die
+#
+# sub _cleanup_and_exit
+#
+# sub _cleanup_file
+#		delete (previously created) file
+#
 # sub syntaxCheck
 # 	check input of user
 #
@@ -219,26 +229,42 @@ sub _warn {
 	warn &Carp::longmess;
 }
 
-sub _clean{
-	ReadMode('restore') if defined &ReadMode;
-	for my $f(@_clean_up_files){
-		unlink $f if -f $f;
-	}
-	_die(@_);
-}
-
 sub _cleanup{
 	ReadMode('restore') if defined &ReadMode;
 	for my $f(@_clean_up_files){
 		unlink $f if -f $f;
+		# delete directory of file if empty
+		for(my $dir = $f; $dir =~ /^(.+)\/[^\/]+\z/;){
+			$dir = $1;
+			rmdir $dir or last;
+		}
 	}
+}
+
+sub _cleanup_and_die{
+	_cleanup;
+	_die(@_);
+}
+
+sub _cleanup_and_exit{
+	_cleanup;
 	exit 1;
 }
 
-$SIG{'__DIE__'} = \&_clean;
-$SIG{'INT'}     = \&_cleanup;
-$SIG{'KILL'}    = \&_cleanup;
-$SIG{'TERM'}    = \&_cleanup;
+sub _cleanup_file{
+	my $filename = shift;
+	my $deleted = 0;
+	if(-f $filename && 0 < grep {$filename eq $_} @_clean_up_files){
+		unlink $filename;
+		$deleted = 1;
+	}
+	return $deleted;
+}
+
+$SIG{'__DIE__'} = \&_cleanup_and_die;
+$SIG{'INT'}     = \&_cleanup_and_exit;
+$SIG{'KILL'}    = \&_cleanup_and_exit;
+$SIG{'TERM'}    = \&_cleanup_and_exit;
 $SIG{__WARN__}  = \&_warn;
 
 sub syntaxCheck{
@@ -363,6 +389,7 @@ sub syntaxCheck{
 
 	sub get_pos{
 		my $self = shift;
+		my $type = shift // 'simple';
 		my $min_verbosity = shift // 3;
 		my $pos;
 		if($self->is_running){
@@ -370,14 +397,19 @@ sub syntaxCheck{
 			if($self->{'last_stdout_line'} =~ /ANS_TIME_POSITION='(.*)'/){
 				$pos = $1;
 			}
+			if($type eq 'full'){
+				$pos = {'seconds' => $pos};
+				$self->cmd('get_percent_pos', $min_verbosity);
+				if($self->{'last_stdout_line'} =~ /ANS_PERCENT_POSITION='(.*)'/){
+					$pos->{'percent'} = $1;
+				}
+				$self->cmd('get_time_length', $min_verbosity);
+				if($self->{'last_stdout_line'} =~ /ANS_LENGTH='(.*)'/){
+					$pos->{'length'} = $1;
+				}
+				#$pos->{'file'} = $self->get_current_file($min_verbosity);
+			}
 		}
-		#$pos->{'file'} = $self->get_current_file($min_verbosity);
-		#$self->cmd('get_percent_pos', $min_verbosity);
-		#$self->{'stdout'}[-1] =~ /ANS_PERCENT_POSITION=(.*)/;
-		#$pos->{'percent'} = $1;
-		#$self->cmd('get_time_length', $min_verbosity);
-		#$self->{'stdout'}[-1] =~ /ANS_LENGTH=(.*)/;
-		#$pos->{'length'} = $1;
 		return $pos;
 	}
 
@@ -419,21 +451,24 @@ sub syntaxCheck{
 			$self->msg(2, "key: " . length($key) . ", ". ord($key));
 			$return_value = 1;
 			if($key eq 'h'){
-				my $str = '';
-				$str .= "mplayer help\n";
-				$str .= " h                print this help\n";
-				$str .= " <-  or  ->       seek backward/forward 10 seconds\n";
-				$str .= " down or up       seek backward/forward  1 minute\n";
-				$str .= " pgdown or pgup   seek backward/forward 10 minutes\n";
-				$str .= " < or >           step backward/forward in playlist\n";
-				$str .= " p or SPACE       pause movie (press any key to continue)\n";
-				$str .= " q or ESC         stop playing and quit program\n";
-				$str .= " + or -           adjust audio delay by +/- 0.1 second\n";
-				#$str .= " o          cycle OSD mode:  none / seekbar / seekbar + timer\n";
-				$str .= " * or /           increase or decrease PCM volume\n";
-				#$str .= " x or z           adjust subtitle delay by +/- 0.1 second\n";
-				#$str .= " r or t  adjust subtitle position up/down, also see -vf expand\n";
-				$self->msg(0, $str);
+				my @str = (
+					'mplayer help',
+					' h                print this help',
+					' <-  or  ->       seek backward/forward 10 seconds',
+					' down or up       seek backward/forward  1 minute',
+					' pgdown or pgup   seek backward/forward 10 minutes',
+					' < or >           step backward/forward in playlist',
+					'                  backward is possible only if --keep is set',
+					' SPACE            pause movie (press any key to continue)',
+					' p                print current position information on track',
+					' q or ESC         stop playing and quit program',
+					' + or -           adjust audio delay by +/- 0.1 second',
+					#' o               cycle OSD mode:  none / seekbar / seekbar + timer',
+					' * or /           increase or decrease PCM volume',
+					#' x or z          adjust subtitle delay by +/- 0.1 second',
+					#' r or t          adjust subtitle position up/down, also see -vf expand',
+				);
+				$self->msg(1, join("\n", @str));
 			}elsif(ord($key) == 27){
 				if(@$seq == 1){
 					$self->quit;
@@ -458,9 +493,9 @@ sub syntaxCheck{
 				}
 			}elsif($key eq '<'){
 				$self->cmd("pt_step -1");
-			}elsif($key eq '>'){
+			}elsif($key eq '>' or $key eq 'd'){
 				$self->cmd("pt_step 1");
-			}elsif($key eq 'p' or $key eq ' '){
+			}elsif($key eq ' '){
 				if(-f $self->{'pause_file'}){
 					# forgotten to delete $self->{'pause_file'}?
 				}else{
@@ -475,14 +510,14 @@ sub syntaxCheck{
 					$self->cmd("pause");
 				}
 				unlink $self->{'pause_file'};
+			}elsif($key eq 'p'){
+				$self->get_pos('full');
 			}elsif($key eq 'q'){
 				$self->quit;
 			}elsif($key eq '+'){
 				$self->cmd("audio_delay 0.1");
 			}elsif($key eq '-'){
 				$self->cmd("audio_delay -0.1");
-			}elsif($key =~ /^[oxzrt]\z/){
-				$self->msg(0, 'not implemented', 'warning');
 			}elsif($key eq '*'){
 				$self->cmd("volume 0.1");
 			}elsif($key eq '/'){
@@ -522,8 +557,7 @@ sub syntaxCheck{
 				}else{ # stdout
 					if($self->{'verbose'} > 2 
 						|| (
-							$cmsg !~ /^stdout: ANS_TIME_POSITION/
-							&& $cmsg !~ /^stdout: AO: \[pulse\] 44100Hz/
+							$cmsg !~ /^stdout: AO: \[pulse\] 44100Hz/
 							&& $cmsg !~ /^stdout: Audio only file format/
 							&& $cmsg !~ /^stdout: AUDIO: 44100 Hz/
 							&& $cmsg !~ /^stdout:\s(?:Cannot\sopen\sfile|Failed\sto\sopen)\s
@@ -647,7 +681,7 @@ sub syntaxCheck{
 		ReadMode('cbreak') if defined &ReadMode;
 		for(my ($pos, $pos_old); 
 			$self->is_running() && (!defined($pos) || $pos != $pos_old); 
-			$pos = $self->get_pos()
+			$pos = $self->get_pos('simple')
 		){
 			$pos_old = $pos // 0;
 			my $seq = $self->read_key;
@@ -705,7 +739,7 @@ sub syntaxCheck{
 			while(-f $self->{'pause_file'}){
 				if($pause_counter == 0 
 					|| $pause_counter >= 60 * 1e7 / $wait_ns){
-					$self->msg(1, "pausing (press 'p' or 'space' to continue)");
+					$self->msg(1, "pausing (press SPACE to continue)");
 					$pause_counter = 0;
 				}
 				++$pause_counter;
@@ -1038,18 +1072,17 @@ sub syntaxCheck{
 									$self->scrobble_forked($removed_first_of_last_tracks);
 								}
 							}else{
-								# if state was 'skip', then don't scrobble, but reset state 
-								#  to 'scrobble' for next track.
+								# if state was 'skip' or 'no scrobble', then don't scrobble.
+								# if 'skip', then reset state to 'scrobble' for next track.
 								$self->msg(2, 'skip scrobbling');
-								if($self->get_state eq 'skip'){
-									$removed_first_of_last_tracks = shift @last_tracks;
-									$self->set_state('scrobble');
-								}
+								$removed_first_of_last_tracks = shift @last_tracks;
+								$self->set_state('scrobble') if $self->get_state eq 'skip';
 							}
 							# clean up
 							if(defined $removed_first_of_last_tracks && !$self->{'keep_dl'}){
-								my $filename = $removed_first_of_last_tracks->{'non_lastfm_file'};
-								unlink $filename if -f $filename;
+								$self->msg(1, "deleting file '" 
+									. $removed_first_of_last_tracks->{'non_lastfm_file'} . "'");
+								::_cleanup_file($removed_first_of_last_tracks->{'non_lastfm_file'});
 							}
 						}
 					}
@@ -1877,19 +1910,54 @@ sub syntaxCheck{
 		my $return_value;
 		if(defined $seq && @$seq > 0){
 			my $key = $seq->[0];
+			$self->msg(2, "key: " . length($key) . ", ". ord($key));
 			$return_value = 1;
-			if($key eq 'a'){
-				$self->msg(1, 'activate scrobbling');
-				$self->set_state('scrobble');
+			if($key eq 'h'){
+				my @str = (
+					'last.fm help',
+					' d - Delete current track without scrobbling and goto next track',
+					' h - print this Help',
+					' i - Immediately scrobble current track',
+					' k - sKip scrobbling for current track',
+					' n - No scrobbling any longer',
+					' s - re-activate Scrobbling',
+					' t - sTatistics',
+				);
+				map {$self->msg(1, $_)} @str;
+			}elsif(ord($key) == 27){
+				if(@$seq == 1){
+					$self->msg(1, 'skip scrobbling of current track');
+					$self->set_state('skip');
+				}else{
+					$self->msg(4, Dumper($seq));
+					$self->msg(3, 'unrecognized short cut key');
+					$return_value = 0;
+				}
+			}elsif($key eq '<'){
+				# TODO: cope with scrobbling
+			}elsif($key eq '>'){
+				$self->msg(1, 'skip scrobbling of current track');
+				$self->set_state('skip') unless $self->get_state eq 'no scrobble';
 			}elsif($key eq 'd'){
-				$self->msg(1, 'deactivate scrobbling');
-				$self->set_state('no scrobble');
+				$self->set_state('skip') unless $self->get_state eq 'no scrobble';
+				::_cleanup_file($last_track->{'non_lastfm_file'});
 			}elsif($key eq 'i'){
 				$self->scrobble_forked($last_track);
-				$self->set_state('skip');
-			}elsif($key eq 'k'){
-				$self->msg(1, 'skip scrobbling of current track');
-				$self->set_state('skip');
+				$self->set_state('skip') unless $self->get_state eq 'no scrobble';
+			}elsif($key eq 'k' || $key eq 'q'){
+				if($self->get_state eq 'no scrobble'){
+					$self->msg(1, 
+						"scrobbling is deactivated anyway; to reactivate press 's'");
+				}else{
+					$self->msg(1, 'skip scrobbling of current track');
+					$self->set_state('skip');
+				}
+			}elsif($key eq 'n'){
+				$self->msg(1, 'no scrobbling from now on');
+				$self->set_state('no scrobble');
+			}elsif($key eq 's'){
+				$self->msg(1, 'activate scrobbling');
+				$self->set_state('scrobble');
 			}elsif($key eq 't'){
 				my $time_playing = time() - $self->{'stats'}{'start_time'};
 				my $scrobbled =()= grep {$_->{'scrobbled'}} @{$self->{'stats'}{'played'}};
@@ -1915,14 +1983,6 @@ sub syntaxCheck{
 					)
 				);
 				$self->msg(1, '-'x72); 
-			}elsif($key eq 'h'){
-				$self->msg(1, 'last.fm help');
-				$self->msg(1, ' a - Activate scrobbling');
-				$self->msg(1, ' d - Deactivate scrobbling');
-				$self->msg(1, ' h - print this help');
-				$self->msg(1, ' i - Immediately scrobble current track');
-				$self->msg(1, ' k - sKip scrobbling for current track');
-				$self->msg(1, ' t - sTatistics');
 			}else{
 				$return_value = 0;
 			}
