@@ -456,7 +456,7 @@ sub syntaxCheck{
 					' h                print this help',
 					' <-  or  ->       seek backward/forward 10 seconds',
 					' down or up       seek backward/forward  1 minute',
-					' pgdown or pgup   seek backward/forward 10 minutes',
+					# TODO: ' pgdown or pgup   seek backward/forward 10 minutes',
 					' < or >           step backward/forward in playlist',
 					'                  backward is possible only if --keep is set',
 					' SPACE            pause movie (press any key to continue)',
@@ -1051,6 +1051,9 @@ sub syntaxCheck{
 					}else{
 						if(@{$self->{'mplayer'}{'played'}} > 1){
 							if(@last_tracks > 1){
+								if(defined $last_tracks[-2]->{'non_lastfm_about'}){
+									$self->msg(1, $last_tracks[-2]->{'non_lastfm_about'});
+								}
 								if(defined $self->{'session_key'}){
 									$self->scrobble_forked($last_tracks[-2], 'now playing');
 								}
