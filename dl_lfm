@@ -1591,7 +1591,6 @@ sub syntaxCheck{
 		my $now_playing = shift;
 		my $success = 0;
 		if($track->{'artist'} . $track->{'track'} ne ''){
-			my $info_string = ;
 			$self->msg(2, ($now_playing ? 'updating "now playing"' : 'scrobbling') 
 				. ": $track->{'artist'} -- $track->{'track'}");
 			$success = 1;
