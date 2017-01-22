@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# author:  seth
+# author: seth
 # description: downloads last.fm user data and scrobbles radio streams and 
 #		bandcamp music to last.fm; 
 #
@@ -183,6 +183,7 @@ binmode STDOUT, ":utf8";
 # 	seconds
 
 $| = 1; # don't buffer; stdout is hot now
+my @_clean_up_files = ();
 
 # Carp::Always
 sub _die {
@@ -208,11 +209,17 @@ sub _warn {
 
 sub _clean{
 	ReadMode('restore') if defined &ReadMode;
+	for my $f(@_clean_up_files){
+		unlink $f if -f $f;
+	}
 	_die(@_);
 }
 
 sub _cleanup{
 	ReadMode('restore') if defined &ReadMode;
+	for my $f(@_clean_up_files){
+		unlink $f if -f $f;
+	}
 	exit 1;
 }
 
@@ -293,12 +300,14 @@ sub syntaxCheck{
 			'handle'  => undef,
 			'in'      => undef,
 			'mplayer' => 'mplayer',
+			'pause_file' => 'pause_indicating_file',
 			'played'  => [],
 			'retval'  => undef, # only filled, but not used yet
 			'stdout'  => [],
 			'verbose' => $params->{'verbose'} // 1,
 		}, $class;
 		$self->init();
+		push @_clean_up_files, $self->{'pause_file'};
 		$self->run();
 		$self;
 	}
@@ -438,12 +447,20 @@ sub syntaxCheck{
 			}elsif($key eq '>'){
 				$self->cmd("pt_step 1");
 			}elsif($key eq 'p' or $key eq ' '){
-				$self->cmd("pause");
-				$self->msg(1, 'paused, waiting for any key to continue');
-				until($key = ReadKey(-1)){ # TODO test this
-					usleep 200_000;
+				if(-f $self->{'pause_file'}){
+					# forgotten to delete $self->{'pause_file'}?
+				}else{
+					open(my $FILE, '>', $self->{'pause_file'}) 
+						|| die("cannot create file: " . $!);
+					close($FILE); 
+					$self->cmd("pause");
+					$self->msg(2, 'paused, waiting for any key to continue');
+					until($key = ReadKey(-1)){
+						usleep 200_000;
+					}
+					$self->cmd("pause");
 				}
-				$self->cmd("pause");
+				unlink $self->{'pause_file'};
 			}elsif($key eq 'q'){
 				$self->quit;
 			}elsif($key eq '+'){
@@ -480,9 +497,9 @@ sub syntaxCheck{
 				if($type eq 'stderr'){
 					if($self->{'verbose'} > 1	
 						|| (
-							$cmsg !~ /^sterr: Failed to open LIRC/
-							&& $cmsg !~ /^sterr: Requested audio codec family .* not available\./
-							&& $cmsg !~ /^sterr: Enable it at compilation\./
+							$cmsg !~ /^stderr: Failed to open LIRC/
+							&& $cmsg !~ /^stderr: Requested audio codec family .* not available\./
+							&& $cmsg !~ /^stderr: Enable it at compilation\./
 						)
 					){
 						$cmsg =~ s/^stderr:/mpl_err:/;
@@ -666,6 +683,20 @@ sub syntaxCheck{
 				++$undef_counter;
 			}
 			usleep $wait_ns;
+			# cope with pause:
+			# any mplayer command will break the pause, i.e., forking the mplayer wrapper
+			# will make 'pause' fail, because get_current_file will be called every 100ms.
+			# that's why an empty file is used for indicating a pause
+			my $pause_counter = 0;
+			while(-f $self->{'pause_file'}){
+				if($pause_counter == 0 
+					|| $pause_counter >= 60 * 1e7 / $wait_ns){
+					$self->msg(1, "pausing (press 'p' or 'space' to continue)");
+					$pause_counter = 0;
+				}
+				++$pause_counter;
+				usleep $wait_ns;
+			}
 			$curr_file = $self->get_current_file();
 		}
 		if(defined $curr_file){
@@ -857,7 +888,7 @@ sub syntaxCheck{
 				$self->msg(1, "file '$filename' exists already");
 			}else{ # download track
 				my $cmd = "wget '$trackinfo->{'non_lastfm_url'}' -O '$filename'";
-				$self->msg(1, $cmd);
+				$self->msg(2, $cmd);
 				unless($self->{'simulate'}){
 					$cmd .= ' -q' if $self->{'verbose'} < 3;
 					system($cmd);
@@ -912,7 +943,7 @@ sub syntaxCheck{
 			$self->set_state('scrobble');
 			while($self->{'mplayer'}->is_running){
 				# get random page (rebuild url)
-				$self->msg(1, "get a random page from $first_page to " 
+				$self->msg(1, "get a random tag page from $first_page to " 
 					. ($first_page + $num_pages - 1));
 				$params{'page'} = $first_page + int(rand($num_pages));
 				$self->msg(2, "chose random page $params{'page'}");
@@ -949,6 +980,7 @@ sub syntaxCheck{
 						my $pid = fork();
 						if(not defined $pid){
 							$self->msg(0, 'resources not avilable.', 'error');
+							die "$!";
 						}elsif($pid == 0){
 							$self->{'mplayer'}->wait_for_last_track() if $self->{'play_radio'};
 							exit 0;
@@ -977,7 +1009,10 @@ sub syntaxCheck{
 									# if state was 'skip', then don't scrobble, but reset state 
 									#  to 'scrobble' for next track.
 									$self->msg(2, 'skip scrobbling');
-									$self->set_state('scrobble') if $self->get_state eq 'skip';
+									if($self->get_state eq 'skip'){
+										shift @last_tracks;
+										$self->set_state('scrobble');
+									}
 								}
 							}
 						}
