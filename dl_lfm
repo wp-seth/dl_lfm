@@ -115,6 +115,9 @@ binmode STDOUT, ":utf8";
 # sub get_mobile_session
 # 	login at last.fm as a given user, returns a session key
 #
+# sub get_state
+# 	get present scrobbling state
+#
 # sub get_time_iso
 # 	get date and time as formatted string "%Y-%m-%d%H:%M:%S" from given (or current)
 # 	unix timestamp
@@ -170,6 +173,9 @@ binmode STDOUT, ":utf8";
 #
 # sub set_mp3_tags
 # 	for a given file set mp3 tags via lastfm struct
+#
+# sub set_state
+# 	set scrobbling state (for a simple state machine)
 #
 # sub stream_connect
 # 	given an url, connect to a http(s)-shoutcast-stream; 
@@ -917,7 +923,6 @@ sub syntaxCheck{
 		my $url      = shift;
 		# https://bandcamp.com/tag/metal?page=2&sort_field=pop
 		my $success = 0;
-		my $bandcamp_tag_base_path = 'https://bandcamp.com/tag';
 		if($url =~ /^https?:\/\/bandcamp\.com\/tag\/([a-z0-9]+)(\?.+|)$/){
 			my $tag = $1;
 			$self->msg(1, "reading page(s) of tag '$tag'");
@@ -944,7 +949,6 @@ sub syntaxCheck{
 			my $max_num = (@page_numbers > 0) ? (sort @page_numbers)[-1] : 1;
 			$num_pages = $max_num - $first_page + 1;
 			$self->msg(3, "number of tag pages = $num_pages, first page = $first_page");
-			my @last_tracks = ();
 			# play random tracks and scrobble them until mplayer stops
 			if($self->{'play_radio'}){
 				$self->{'mplayer'} = MPlayerWrapper->new({
@@ -952,100 +956,112 @@ sub syntaxCheck{
 					});
 			}
 			$self->set_state('scrobble');
-			while($self->{'mplayer'}->is_running){
-				# get random page (rebuild url)
-				$self->msg(1, "get a random tag page from $first_page to " 
-					. ($first_page + $num_pages - 1));
-				$params{'page'} = $first_page + int(rand($num_pages));
-				$self->msg(2, "chose random page $params{'page'}");
-				$url = "$bandcamp_tag_base_path/$tag?";
-				while(my ($k, $v) = each %params){
-					$url .= "$k=$v&";
-				}
-				chop($url);
-				my ($http_status, $content) = $self->get_http_content($url);
-				if($http_status == 200){
-					# collect albums urls
-					my @albums = ($content =~ /
-						<a\s+href="
-						(https:\/\/[a-zA-Z0-9-]+\.bandcamp\.com\/album\/[^"]+)
-						"\s+/gx);
-					# goto random album and collect tracks information
-					my $tracks = $self->collect_trackinfos_bandcamp(
-						$albums[int(rand(scalar(@albums)))]);
-					# download random track from album
-					$self->msg(1, "choose random track and download");
-					my $random_track = $self->bandcamp_dl_album_random_track($tracks);
-					my $filename = $random_track->{'non_lastfm_file'};
-					if(defined $filename){
-						$self->msg(3, "chose random track '$filename'");
-						$random_track->{'timestamp'} = undef;
-						$random_track->{'chosenByUser'} = '0';
-						push @last_tracks, $random_track;
-						$self->msg(2, 'play list = ' . Dumper(\@last_tracks));
-						# play and scrobble track
-						$self->{'mplayer'}->enqueue($filename) if $self->{'play_radio'};
-						$self->{'stats'}{'music_bytes'} += (stat $filename)[7];
-						$self->msg(3, 'play list in mplayer = ' 
-							. Dumper($self->{'mplayer'}->{'played'}));
-						my $pid = fork();
-						if(not defined $pid){
-							$self->msg(0, 'resources not avilable.', 'error');
-							die "$!";
-						}elsif($pid == 0){
-							$self->{'mplayer'}->wait_for_last_track() if $self->{'play_radio'};
-							exit 0;
-						}else{
-							if(@{$self->{'mplayer'}{'played'}} > 1){
-								if(@last_tracks > 1){
-									if(defined $self->{'session_key'}){
-										$self->scrobble_forked($last_tracks[-2], 'now playing');
-									}
-								}else{
-									$self->msg(0, 'last_tracks array is too small.', 'error');
-								}
-								ReadMode('cbreak') if defined &ReadMode;
-								while(waitpid($pid, POSIX::WNOHANG) == 0){
-									my $seq = $self->{'mplayer'}->read_key;
-									$self->{'mplayer'}->keypress_handler($seq);
-									$self->scrobble_keypress_handler($last_tracks[0], $seq);
-									usleep 100_000;
-								}
-								ReadMode('restore') if defined &ReadMode;
-								my $removed_first_of_last_tracks;
-								if($self->get_state eq 'scrobble'){
-									if(@last_tracks > 0 && defined $self->{'session_key'}){
-										$removed_first_of_last_tracks = shift @last_tracks;
-										$self->scrobble_forked($removed_first_of_last_tracks);
-									}
-								}else{
-									# if state was 'skip', then don't scrobble, but reset state 
-									#  to 'scrobble' for next track.
-									$self->msg(2, 'skip scrobbling');
-									if($self->get_state eq 'skip'){
-										$removed_first_of_last_tracks = shift @last_tracks;
-										$self->set_state('scrobble');
-									}
-								}
-								# clean up
-								if(defined $removed_first_of_last_tracks && !$self->{'keep_dl'}){
-									my $filename = $removed_first_of_last_tracks->{'non_lastfm_file'};
-									unlink $filename if -f $filename;
-								}
-							}
-						}
-					}else{
-						$self->msg(0, 'could not download track', 'warning');
-					}
-				}else{
-					$self->msg(0, "could not connect to '$url'. " 
-						. "maybe you should just try again.", 'error');
-				}
-			}
+			$self->bandcamp_radio_loop($first_page, $num_pages, \%params, $tag);
 		}else{
 			$self->msg(0, "could not read bandcamp tag url '$url'", 'error');
 		}
 		return $success;
+	}
+
+	sub bandcamp_radio_loop{
+		my $self       = shift;
+		my $first_page = shift;
+		my $num_pages  = shift;
+		my $params     = shift;
+		my $tag        = shift;
+		my $bandcamp_tag_base_path = 'https://bandcamp.com/tag';
+		my @last_tracks = ();
+		while($self->{'mplayer'}->is_running){
+			# get random page (rebuild url)
+			$self->msg(1, "get a random tag page from $first_page to " 
+				. ($first_page + $num_pages - 1));
+			$params->{'page'} = $first_page + int(rand($num_pages));
+			$self->msg(2, "chose random page $params->{'page'}");
+			my $url = "$bandcamp_tag_base_path/$tag?";
+			while(my ($k, $v) = each %$params){
+				$url .= "$k=$v&";
+			}
+			chop($url);
+			my ($http_status, $content) = $self->get_http_content($url);
+			if($http_status == 200){
+				# collect albums urls
+				my @albums = ($content =~ /
+					<a\s+href="
+					(https:\/\/[a-zA-Z0-9-]+\.bandcamp\.com\/album\/[^"]+)
+					"\s+/gx);
+				# goto random album and collect tracks information
+				my $tracks = $self->collect_trackinfos_bandcamp(
+					$albums[int(rand(scalar(@albums)))]);
+				# download random track from album
+				$self->msg(1, "choose random track and download");
+				my $random_track = $self->bandcamp_dl_album_random_track($tracks);
+				my $filename = $random_track->{'non_lastfm_file'};
+				if(defined $filename){
+					$self->msg(3, "chose random track '$filename'");
+					$random_track->{'timestamp'} = undef;
+					$random_track->{'chosenByUser'} = '0';
+					push @last_tracks, $random_track;
+					$self->msg(2, 'play list = ' . Dumper(\@last_tracks));
+					# play and scrobble track
+					$self->{'mplayer'}->enqueue($filename) if $self->{'play_radio'};
+					$self->{'stats'}{'music_bytes'} += (stat $filename)[7];
+					$self->msg(3, 'play list in mplayer = ' 
+						. Dumper($self->{'mplayer'}->{'played'}));
+					my $pid = fork();
+					if(not defined $pid){
+						$self->msg(0, 'resources not avilable.', 'error');
+						die "$!";
+					}elsif($pid == 0){
+						$self->{'mplayer'}->wait_for_last_track() if $self->{'play_radio'};
+						exit 0;
+					}else{
+						if(@{$self->{'mplayer'}{'played'}} > 1){
+							if(@last_tracks > 1){
+								if(defined $self->{'session_key'}){
+									$self->scrobble_forked($last_tracks[-2], 'now playing');
+								}
+							}else{
+								$self->msg(0, 'last_tracks array is too small.', 'error');
+							}
+							ReadMode('cbreak') if defined &ReadMode;
+							while(waitpid($pid, POSIX::WNOHANG) == 0){
+								my $seq = $self->{'mplayer'}->read_key;
+								$self->{'mplayer'}->keypress_handler($seq);
+								$self->scrobble_keypress_handler($last_tracks[0], $seq);
+								usleep 100_000;
+							}
+							ReadMode('restore') if defined &ReadMode;
+							my $removed_first_of_last_tracks;
+							if($self->get_state eq 'scrobble'){
+								if(@last_tracks > 0 && defined $self->{'session_key'}){
+									$removed_first_of_last_tracks = shift @last_tracks;
+									$self->scrobble_forked($removed_first_of_last_tracks);
+								}
+							}else{
+								# if state was 'skip', then don't scrobble, but reset state 
+								#  to 'scrobble' for next track.
+								$self->msg(2, 'skip scrobbling');
+								if($self->get_state eq 'skip'){
+									$removed_first_of_last_tracks = shift @last_tracks;
+									$self->set_state('scrobble');
+								}
+							}
+							# clean up
+							if(defined $removed_first_of_last_tracks && !$self->{'keep_dl'}){
+								my $filename = $removed_first_of_last_tracks->{'non_lastfm_file'};
+								unlink $filename if -f $filename;
+							}
+						}
+					}
+				}else{
+					$self->msg(0, 'could not download track', 'warning');
+				}
+			}else{
+				$self->msg(0, "could not connect to '$url'. " 
+					. "maybe you should just try again.", 'error');
+			}
+		}
+		return 1;
 	}
 
 	sub collect_trackinfos_bandcamp{
@@ -1854,6 +1870,66 @@ sub syntaxCheck{
 		return 1;
 	}
 
+	sub scrobble_keypress_handler{
+		my $self = shift;
+		my $last_track = shift;
+		my $seq = shift;
+		my $return_value;
+		if(defined $seq && @$seq > 0){
+			my $key = $seq->[0];
+			$return_value = 1;
+			if($key eq 'a'){
+				$self->msg(1, 'activate scrobbling');
+				$self->set_state('scrobble');
+			}elsif($key eq 'd'){
+				$self->msg(1, 'deactivate scrobbling');
+				$self->set_state('no scrobble');
+			}elsif($key eq 'i'){
+				$self->scrobble_forked($last_track);
+				$self->set_state('skip');
+			}elsif($key eq 'k'){
+				$self->msg(1, 'skip scrobbling of current track');
+				$self->set_state('skip');
+			}elsif($key eq 't'){
+				my $time_playing = time() - $self->{'stats'}{'start_time'};
+				my $scrobbled =()= grep {$_->{'scrobbled'}} @{$self->{'stats'}{'played'}};
+				$self->msg(1, '-'x72); 
+				$self->msg(1, sprintf('playing since %s UTC (%us)', 
+						'' . gmtime($self->{'stats'}{'start_time'}), 
+						$time_playing,
+					)
+				);
+				$self->msg(1, 
+					sprintf('bytes received: %uMB music at rate %ukB/s', 
+						$self->{'stats'}{'music_bytes'} / 1_000_000, 
+						$self->{'stats'}{'music_bytes'} / (1000 * $time_playing),
+					)
+				);
+				$self->msg(1, 
+					sprintf('played tracks %u (avg. %u per hour), ' 
+						. 'scrobbled %u (avg. %u per hour)', 
+						scalar(@{$self->{'stats'}{'played'}}), 
+						scalar(@{$self->{'stats'}{'played'}}) * 60 * 60 / $time_playing, 
+						$scrobbled, 
+						$scrobbled * 60 * 60 / $time_playing, 
+					)
+				);
+				$self->msg(1, '-'x72); 
+			}elsif($key eq 'h'){
+				$self->msg(1, 'last.fm help');
+				$self->msg(1, ' a - Activate scrobbling');
+				$self->msg(1, ' d - Deactivate scrobbling');
+				$self->msg(1, ' h - print this help');
+				$self->msg(1, ' i - Immediately scrobble current track');
+				$self->msg(1, ' k - sKip scrobbling for current track');
+				$self->msg(1, ' t - sTatistics');
+			}else{
+				$return_value = 0;
+			}
+		}
+		return $return_value;
+	}
+
 	sub set_mp3_tags{
 		my $self      = shift;
 		my $filename  = shift;
@@ -2058,66 +2134,6 @@ sub syntaxCheck{
 		close $HANDLER if $self->{'play_radio'};
 		$socket->close;
 		return 1;
-	}
-
-	sub scrobble_keypress_handler{
-		my $self = shift;
-		my $last_track = shift;
-		my $seq = shift;
-		my $return_value;
-		if(defined $seq && @$seq > 0){
-			my $key = $seq->[0];
-			$return_value = 1;
-			if($key eq 'a'){
-				$self->msg(1, 'activate scrobbling');
-				$self->set_state('scrobble');
-			}elsif($key eq 'd'){
-				$self->msg(1, 'deactivate scrobbling');
-				$self->set_state('no scrobble');
-			}elsif($key eq 'i'){
-				$self->scrobble_forked($last_track);
-				$self->set_state('skip');
-			}elsif($key eq 'k'){
-				$self->msg(1, 'skip scrobbling of current track');
-				$self->set_state('skip');
-			}elsif($key eq 't'){
-				my $time_playing = time() - $self->{'stats'}{'start_time'};
-				my $scrobbled =()= grep {$_->{'scrobbled'}} @{$self->{'stats'}{'played'}};
-				$self->msg(1, '-'x72); 
-				$self->msg(1, sprintf('playing since %s UTC (%us)', 
-						'' . gmtime($self->{'stats'}{'start_time'}), 
-						$time_playing,
-					)
-				);
-				$self->msg(1, 
-					sprintf('bytes received: %uMB music at rate %ukB/s', 
-						$self->{'stats'}{'music_bytes'} / 1_000_000, 
-						$self->{'stats'}{'music_bytes'} / (1000 * $time_playing),
-					)
-				);
-				$self->msg(1, 
-					sprintf('played tracks %u (avg. %u per hour), ' 
-						. 'scrobbled %u (avg. %u per hour)', 
-						scalar(@{$self->{'stats'}{'played'}}), 
-						scalar(@{$self->{'stats'}{'played'}}) * 60 * 60 / $time_playing, 
-						$scrobbled, 
-						$scrobbled * 60 * 60 / $time_playing, 
-					)
-				);
-				$self->msg(1, '-'x72); 
-			}elsif($key eq 'h'){
-				$self->msg(1, 'last.fm help');
-				$self->msg(1, ' a - Activate scrobbling');
-				$self->msg(1, ' d - Deactivate scrobbling');
-				$self->msg(1, ' h - print this help');
-				$self->msg(1, ' i - Immediately scrobble current track');
-				$self->msg(1, ' k - sKip scrobbling for current track');
-				$self->msg(1, ' t - sTatistics');
-			}else{
-				$return_value = 0;
-			}
-		}
-		return $return_value;
 	}
 
 	sub youtube_get_video_length{
