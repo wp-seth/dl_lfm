@@ -14,7 +14,7 @@ use Pod::Usage;
 use POSIX qw/strftime/;       # format timestamp
 use Term::ReadKey;            # used for user input
 
-$main::VERSION = '0.7';
+$main::VERSION = '0.7.1';
 binmode STDOUT, ":utf8";
 
 # functions
@@ -1045,7 +1045,7 @@ sub syntaxCheck{
 					$random_track->{'chosenByUser'} = '0';
 					push @last_tracks, $random_track;
 					$self->msg(2, 'play list = ' . Dumper(\@last_tracks));
-					# play and scrobble track
+					# play track (scrobbling comes later)
 					$self->{'mplayer'}->enqueue($filename) if $self->{'play_radio'};
 					$self->{'stats'}{'music_bytes'} += (stat $filename)[7];
 					$self->msg(3, 'play list in mplayer = ' 
@@ -1055,6 +1055,7 @@ sub syntaxCheck{
 						$self->msg(0, 'resources not avilable.', 'error');
 						die "$!";
 					}elsif($pid == 0){
+						# wait until last track in playlist is reached
 						$self->{'mplayer'}->wait_for_last_track() if $self->{'play_radio'};
 						exit 0;
 					}else{
@@ -1070,6 +1071,7 @@ sub syntaxCheck{
 								$self->msg(0, 'last_tracks array is too small.', 'error');
 							}
 							ReadMode('cbreak') if defined &ReadMode;
+							# wait until last track in playlist is reached
 							while(waitpid($pid, POSIX::WNOHANG) == 0){
 								my $seq = $self->{'mplayer'}->read_key;
 								$self->{'mplayer'}->keypress_handler($seq);
@@ -1719,18 +1721,22 @@ sub syntaxCheck{
 			}
 			# update stats
 			if(defined($now_playing)){
+				$self->msg(4, 'debug "now playing"');
 				if(@{$self->{'stats'}{'played'}} == 0
 					|| $self->{'stats'}{'played'}[-1]{'artist'} ne $track->{'artist'}
 					|| $self->{'stats'}{'played'}[-1]{'track'} ne $track->{'track'}
 				){
+					$self->msg(2, 'push new entry');
 					push @{$self->{'stats'}{'played'}}, {
 						%$track,
 						'time' => time,
 						'scrobbled' => 0,
 					};
+				}else{
+					$self->msg(2, "'played' list is not empty and track is same as last time");
 				}
 			}else{
-				if(@{$self->{'stats'}{'played'}} > 1){
+				if(@{$self->{'stats'}{'played'}} > 0){
 					$self->{'stats'}{'played'}[-1]{'scrobbled'} = 1;
 					$self->{'stats'}{'played'}[-1]{'time'} = time();
 				}
@@ -2267,8 +2273,8 @@ if($params->{'dl'}){
 		$lfm_dl->msg(0, 'username required', 'error');
 	}
 }
-if(defined($params->{'radio'}) || defined($params->{'scrobble'})){
-	my $url = $params->{'radio'} // $params->{'scrobble'};
+my $url = $params->{'radio'} // $params->{'scrobble'};
+if(defined $url){
 	if(defined($params->{'user'}) || defined($params->{'scrobble'})){
 		# login to last.fm
 		$lfm_dl->get_mobile_session() 
