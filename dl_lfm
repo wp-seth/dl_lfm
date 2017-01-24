@@ -448,7 +448,6 @@ sub syntaxCheck{
 		my $return_value;
 		if(defined $seq && @$seq > 0){
 			my $key = $seq->[0];
-			$self->msg(2, "key: " . length($key) . ", ". ord($key));
 			$return_value = 1;
 			if($key eq 'h'){
 				my @str = (
@@ -456,7 +455,7 @@ sub syntaxCheck{
 					' h                print this help',
 					' <-  or  ->       seek backward/forward 10 seconds',
 					' down or up       seek backward/forward  1 minute',
-					# TODO: ' pgdown or pgup   seek backward/forward 10 minutes',
+					' pgdown or pgup   seek backward/forward 10 minutes',
 					' < or >           step backward/forward in playlist',
 					'                  backward is possible only if --keep is set',
 					' SPACE            pause movie (press any key to continue)',
@@ -481,6 +480,16 @@ sub syntaxCheck{
 						$self->cmd("seek 60"); # up
 					}elsif($seq->[1] == 91 && $seq->[2] == 66){
 						$self->cmd("seek -60"); # down
+					}else{
+						$self->msg(4, Dumper($seq));
+						$self->msg(3, 'unrecognized short cut key');
+						$return_value = 0;
+					}
+				}elsif(@$seq == 4){
+					if($seq->[1] == 91 && $seq->[2] == 53 && $seq->[3] == 126){
+						$self->cmd("seek 600"); # page up
+					}elsif($seq->[1] == 91 && $seq->[2] == 54 && $seq->[3] == 126){
+						$self->cmd("seek -600"); # page down
 					}else{
 						$self->msg(4, Dumper($seq));
 						$self->msg(3, 'unrecognized short cut key');
@@ -650,11 +659,11 @@ sub syntaxCheck{
 				if(ord($key) == 27){
 					while($key = ReadKey(-1)){
 						push @$seq, ord($key);
-						$self->msg(3, $seq->[-1]);
 					}
 				}
 			}
 		}
+		$self->msg(3, Dumper($seq)) if $seq;
 		return $seq;
 	}
 
@@ -739,7 +748,7 @@ sub syntaxCheck{
 			while(-f $self->{'pause_file'}){
 				if($pause_counter == 0 
 					|| $pause_counter >= 10 * 60 * 1e6 / $wait_ns){
-					$self->msg(1, "pausing (press SPACE to continue)");
+					$self->msg(1, 'pausing (press SPACE to continue)');
 					$pause_counter = 0;
 				}
 				++$pause_counter;
@@ -1937,7 +1946,9 @@ sub syntaxCheck{
 					$return_value = 0;
 				}
 			}elsif($key eq '<'){
-				# TODO: cope with scrobbling
+				$self->msg(2, 'scrobbling disabled until you reach the track that would have come next');
+				# coping with scrobbling is probably not necessary, because scrobbling will 
+				# be done on absolute (and not relative) next track in playlist
 			}elsif($key eq '>'){
 				$self->msg(1, 'skip scrobbling of current track');
 				$self->set_state('skip') unless $self->get_state eq 'no scrobble';
@@ -2265,6 +2276,8 @@ if(defined($params->{'radio'}) || defined($params->{'scrobble'})){
 	}
 	$lfm_dl->scrobble_from_source($url);
 }
+
+_cleanup;
 
 __END__
 
