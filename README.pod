@@ -4,21 +4,39 @@ downloads last.fm profiles and helps scrobbling from files or radio stations
 
 =head1 DESCRIPTION
 
-dl_lfm downloads last.fm profiles or helps scrobbling from files or radio stations.
+dl_lfm has several functions, it
+
+* downloads a last.fm profile
+
+* helps scrobbling from json files, radio streaming stations (using vlc) or some 
+webpages (supported: bandcamp.com and experimentally youtube.com)
+
+* plays and scrobbles randomly picked tracks from bandcamp.com like a radio 
+(needs mplayer installed)
 
 =head1 SYNOPSIS
 
 dl_lfm [options]
 
       --dl                    download all data from user (requires -u)
+      --keep                  when using bandcamp radio, keep downloaded files 
+                               (default: delete after playing)
       --password=string       password
       --password-file=string  a file containing your last-fm password
-  -s  --scrobble=src          use this file or radio station to scrobble some 
-                               tracks, see --man for suported file types and urls
+  -r  --radio=src             use radio station to play some tracks; if --user is 
+                               set, then tracks will be scrobbled, see --man for 
+                               suported urls; needs mplayer for bandcamp.
+  -s  --scrobble=src          use this file or radio station to scrobble some tracks
+                               without playing them, see --man for suported file 
+                               types and urls
       --stream-out=dest       use this destination to send the stream to 
                                (if scrobbling from stream), default = '| vlc -'
+  -t, --test                  don't scrobble anything, simulate only
+      --timestamp=string      set timestamp (UTC) of album end, when scrobbling from 
+                               bandcamp.com or yaml file; treat string as UTC timestamp string
+      --timestamp-local=str   same as --timestamp, but treat str as local timestamp
+                               (not UTC)
   -u, --user=string           username
-  -t, --test                  don't download anything
 
 meta:
 
@@ -36,8 +54,32 @@ meta:
 example:
 
   dl_lfm --dl --user='testtesttest123123123'
+
     gets all public information on user 'testtesttest123123123' from last.fm 
     and saves that data into several files.
+
+  dl_lfm --scrobble='https://someincredibleband.bandcamp/album/someawsomealbum' 
+  --user="testtest123123"
+
+    scrobbles given album to last.fm profile of user 'testtest12123'. the 
+    scrobbling timestamps will be set as if you had just now finished listening to
+    the album. tracks will not be played.
+
+  dl_lfm --scrobble='https://someincredibleband.bandcamp/album/someawsomealbum' 
+  --user="testtest123123" --timestamp='2016-01-01 12:34'
+
+    same as above but sets the scrobbling timestamp as if you had finished 
+    listening to the album at 2016-01-01 12:34 UTC.
+
+  dl_lfm --radio='https://bandcamp.com/tag/progressivepostfuneraldoommetal' 
+
+    plays random tracks of given tags from bandcamp.com. uses mplayer for playing.
+
+  dl_lfm --radio='https://bandcamp.com/tag/progressivepostfuneraldoommetal' 
+  --user="cutelittlesquirrel"
+
+    plays random tracks of given tags from bandcamp.com and scrobbles them to 
+    last.fm profile of user cutelittlesquirrel.
 
 =head1 OPTIONS
 
@@ -61,9 +103,24 @@ use this password for last.fm user B<--user>=I<username>.
 use the first line of this file a password for last.fm. 
 default = $HOME/.password_lastfm
 
+=item B<--radio>=I<source>, B<-r> I<source>
+
+use I<source> for playing some tracks. if B<--user>=I<username> is set, then the 
+played tracks will be scrobbled to last.fm.
+
+supported urls or radio streaming stations: 
+
+* https://{band or label name}.bandcamp.com/album/{albumname}
+
+* https://bandcamp.com/tag/{tagname}
+
+* {protocol}://{ip address}:{port}
+
 =item B<--scrobble>=I<source>, B<-s> I<source>
 
-requires B<--user>=I<username> and B<--password>=I<password> for last.fm.
+same as B<--radio>, but without playing the tracks (if possible).
+
+requires B<--user>=I<username> for last.fm.
 
 use I<source> for scrobbling some tracks to last.fm.
 
@@ -71,15 +128,18 @@ supported file type(s): json
 
 OR
 
-supported urls: https://{band or label name}.bandcamp.com/album/{albumname}
+supported urls or radio streaming stations: 
 
-OR
+* https://{band or label name}.bandcamp.com/album/{albumname}
 
-supported radio stations format: {protocol}://{ip address}:{port}
+* https://bandcamp.com/tag/{tagname}
+
+* {protocol}://{ip address}:{port}
 
 =item B<--stream-out>=I<destination>
 
-if scrobbling to a stream (see B<--scrobble>), then this param can be used to adjust the destination where the stream data shall forwarded to.
+if playing a radio stream (see B<--radio>), then this param can be used to adjust
+the destination where the stream data shall forwarded to.
 
 default: I<destination> = '| vlc -', i.e., the stream data will be piped '|' to a 
 new instance of vlc, where the parameter '-' means, that vlc will read the stream 
@@ -93,7 +153,7 @@ use this last.fm username, e.g. for B<--dl>
 
 =item B<--test>, B<-t>
 
-don't download anything
+don't scrobble anything, but simulate only
 
 =item B<--version>, B<-V>
 
@@ -119,17 +179,17 @@ same as B<--verbose=0>.
 
 =item B<--very-verbose, -vv>
 
-same as B<--verbose=2>. you may use B<-vvv> for B<--verbose=3> a.s.o.
+same as B<--verbose=3>. you may use B<-vvv> for B<--verbose=4> a.s.o.
 
 =item B<--verbose, -v>
 
-same as B<--verbose=1>.
+same as B<--verbose=2>.
 
 =back
 
 =head1 LICENCE
 
-Copyright (c) 2016, seth
+Copyright (c) 2017, seth
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
