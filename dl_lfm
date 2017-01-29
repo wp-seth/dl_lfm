@@ -927,6 +927,7 @@ sub syntaxCheck{
 					print $OUTFILE 'if you like a track, please consider buying the track or';
 					print $OUTFILE ' full album at bandcamp.com.';
 					close($OUTFILE);
+					push @_clean_up_files, $readme_file unless $self->{'keep_dl'};
 				}else{
 					$self->msg(0, "$!: '$readme_file'", 'error');
 				}
