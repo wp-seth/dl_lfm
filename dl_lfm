@@ -14,7 +14,7 @@ use Pod::Usage;
 use POSIX qw/strftime/;       # format timestamp
 use Term::ReadKey;            # used for user input
 
-$main::VERSION = '0.7.1';
+$main::VERSION = '0.7.2';
 binmode STDOUT, ":utf8";
 
 # functions
@@ -953,6 +953,9 @@ sub syntaxCheck{
 				unless($self->{'simulate'}){
 					$cmd .= ' -q' if $self->{'verbose'} < 3;
 					system($cmd);
+					unless(-f $filename){
+						$self->msg(0, "command '$cmd' seem to having failed.", 'error');
+					}
 				}
 			}
 			$self->set_mp3_tags($filename, $trackinfo);
@@ -1040,7 +1043,7 @@ sub syntaxCheck{
 				$self->msg(1, "choose random track and download");
 				my $random_track = $self->bandcamp_dl_album_random_track($tracks);
 				my $filename = $random_track->{'non_lastfm_file'};
-				if(defined $filename){
+				if(defined $filename && -f $filename){
 					$self->msg(3, "chose random track '$filename'");
 					$random_track->{'timestamp'} = undef;
 					$random_track->{'chosenByUser'} = '0';
