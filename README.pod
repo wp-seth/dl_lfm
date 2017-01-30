@@ -14,6 +14,11 @@ webpages (supported: bandcamp.com and experimentally youtube.com)
 * plays and scrobbles randomly picked tracks from bandcamp.com like a radio 
 (needs mplayer installed)
 
+=head1 REQUIREMENTS FOR INSTALLATION
+
+in debian, ubuntu, ... it should be enough to install the following packages:
+sudo apt-get install libterm-readkey-perl libmp3-tag-perl libyaml-perl libjson-perl mplayer
+
 =head1 SYNOPSIS
 
 dl_lfm [options]
