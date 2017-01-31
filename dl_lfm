@@ -1056,7 +1056,7 @@ sub syntaxCheck{
 						. Dumper($self->{'mplayer'}->{'played'}));
 					my $pid = fork();
 					if(not defined $pid){
-						$self->msg(0, 'resources not avilable.', 'error');
+						$self->msg(0, 'resources not available.', 'error');
 						die "$!";
 					}elsif($pid == 0){
 						# wait until last track in playlist is reached
@@ -1103,6 +1103,12 @@ sub syntaxCheck{
 								::_cleanup_file($removed_first_of_last_tracks->{'non_lastfm_file'});
 							}
 						}
+					}
+				}elsif(defined $filename){
+					if(-f $filename){
+						$self->msg(0, 'now, this completely does not make sense.', 'error');
+					}else{
+						$self->msg(0, "could not download track '$filename'", 'warning');
 					}
 				}else{
 					$self->msg(0, 'could not download track', 'warning');
@@ -2019,28 +2025,32 @@ sub syntaxCheck{
 		my $filename  = shift;
 		my $trackinfo = shift;
 		my $changed = 0;
-		if(!$self->{'simulate'} && -f $filename){
-			my $mp3 = MP3::Tag->new($filename);
-			my $info = $mp3->autoinfo();
-			unless(defined $info->{'title'} && length($info->{'title'}) > 0){
-				$mp3->title_set($trackinfo->{'track'}); # sic
-				++$changed;
+		unless($self->{'simulate'}){
+			if(-f $filename){
+				my $mp3 = MP3::Tag->new($filename);
+				my $info = $mp3->autoinfo();
+				unless(defined $info->{'title'} && length($info->{'title'}) > 0){
+					$mp3->title_set($trackinfo->{'track'}); # sic
+					++$changed;
+				}
+				unless(defined $info->{'album'} && length($info->{'album'}) > 0){
+					$mp3->album_set($trackinfo->{'album'});
+					++$changed;
+				}
+				unless(defined $info->{'track'} && length($info->{'track'}) > 0){
+					$mp3->track_set($trackinfo->{'trackNumber'});
+					++$changed;
+				}
+				unless(defined $info->{'artist'} && length($info->{'artist'}) > 0){
+					$mp3->artist_set($trackinfo->{'artist'});
+					++$changed;
+				}
+				# TODO: save bandcamp-url as comment
+				$mp3->update_tags() if $changed > 0;
+				$mp3->close();
+			}else{
+				$self->msg(0, "cannot check/modify mp3 tags. file '$filename' does not exist", 'warning');
 			}
-			unless(defined $info->{'album'} && length($info->{'album'}) > 0){
-				$mp3->album_set($trackinfo->{'album'});
-				++$changed;
-			}
-			unless(defined $info->{'track'} && length($info->{'track'}) > 0){
-				$mp3->track_set($trackinfo->{'trackNumber'});
-				++$changed;
-			}
-			unless(defined $info->{'artist'} && length($info->{'artist'}) > 0){
-				$mp3->artist_set($trackinfo->{'artist'});
-				++$changed;
-			}
-			# TODO: save bandcamp-url as comment
-			$mp3->update_tags() if $changed > 0;
-			$mp3->close();
 		}
 		return $changed;
 	}
