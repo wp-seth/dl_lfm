@@ -970,7 +970,7 @@ sub syntaxCheck{
 		my $url      = shift;
 		# https://bandcamp.com/tag/metal?page=2&sort_field=pop
 		my $success = 0;
-		if($url =~ /^https?:\/\/bandcamp\.com\/tag\/([a-z0-9]+)(\?.+|)$/){
+		if($url =~ /^https?:\/\/bandcamp\.com\/tag\/([a-z0-9\-]+)(\?.+|)$/){
 			my $tag = $1;
 			$self->msg(1, "reading page(s) of tag '$tag'");
 			# get HTTP GET params from url
