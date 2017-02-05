@@ -43,7 +43,7 @@ binmode STDOUT, ":utf8";
 # sub new
 # 	constructor
 # sub cmd
-# 	send sommand to mplayer
+# 	send command to mplayer
 # sub enqueue
 # 	enqueue track to playlist
 # sub get_current_file
@@ -73,11 +73,11 @@ binmode STDOUT, ":utf8";
 # sub quit
 # 	quit
 # sub run
-#		starts mplayer in a separate process
+#	starts mplayer in a separate process
 # sub wait_for_end
 # 	wait for end of playlist
 # sub wait_for_last_track
-# 	wait until beginn of last track in playlist
+# 	wait until begin of last track in playlist
 # sub wait_for_track
 # 	wait for begin of given track
 #
@@ -90,10 +90,10 @@ binmode STDOUT, ":utf8";
 # 	unused: last.fm authentication
 #
 # sub bandcamp_dl_album_random_track
-#		download a random track of a given album
+#	download a random track of a given album
 #
 # sub bandcamp_dl_track
-#		download a track from bandcamp.com
+#	download a track from bandcamp.com
 #
 # sub bandcamp_radio
 # 	play bandcamp music like a radio station
@@ -182,7 +182,7 @@ binmode STDOUT, ":utf8";
 # 	a simple user interface can be used to skip/stop scrobbling when using a stream
 #
 # sub set_mp3_tags
-# 	for a given file set mp3 tags via lastfm struct
+# 	for a given file, set mp3 tags via lastfm struct
 #
 # sub set_state
 # 	set scrobbling state (for a simple state machine)
@@ -192,7 +192,7 @@ binmode STDOUT, ":utf8";
 # 	return socket and icy-metadata
 #
 # sub stream_parse_icy_info
-# 	given a icy info string, try to get artist and title
+# 	given an icy info string, try to get artist and title
 #
 # sub stream_read_current_track
 # 	after stream_connect, this function reads the stream from the socket.
@@ -200,7 +200,7 @@ binmode STDOUT, ":utf8";
 # 	a file.
 # 	the icy info is used to scrobble the track into a given last.fm profile.
 #
-# sub youtube_get_video_length{
+# sub youtube_get_video_length
 # 	given a youtube video url, this function returns the length of the video in 
 # 	seconds
 
