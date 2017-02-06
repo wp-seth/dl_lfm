@@ -983,27 +983,31 @@ sub syntaxCheck{
 			$self->msg(5, Dumper(\%params));
 			# get tag page
 			my ($http_status, $content) = $self->get_http_content($url);
-			# get number of pages with albums of this tag
-			my $num_pages = 1;
-			my @page_numbers = $content =~ /
-				<li>
-					<a\s
-						class="[^"]+"\s
-						href="\?page=([0-9]+)"\s
-						rel="nofollow">[0-9]+
-					<\/a>
-				<\/li>/gxs;
-			my $max_num = (@page_numbers > 0) ? (sort @page_numbers)[-1] : 1;
-			$num_pages = $max_num - $first_page + 1;
-			$self->msg(3, "number of tag pages = $num_pages, first page = $first_page");
-			# play random tracks and scrobble them until mplayer stops
-			if($self->{'play_radio'}){
-				$self->{'mplayer'} = MPlayerWrapper->new({
-						'verbose' => $self->{'verbose'},
-					});
+			if($http_status == 200){
+				# get number of pages with albums of this tag
+				my $num_pages = 1;
+				my @page_numbers = $content =~ /
+					<li>
+						<a\s
+							class="[^"]+"\s
+							href="\?page=([0-9]+)"\s
+							rel="nofollow">[0-9]+
+						<\/a>
+					<\/li>/gxs;
+				my $max_num = (@page_numbers > 0) ? (sort @page_numbers)[-1] : 1;
+				$num_pages = $max_num - $first_page + 1;
+				$self->msg(3, "number of tag pages = $num_pages, first page = $first_page");
+				# play random tracks and scrobble them until mplayer stops
+				if($self->{'play_radio'}){
+					$self->{'mplayer'} = MPlayerWrapper->new({
+							'verbose' => $self->{'verbose'},
+						});
+				}
+				$self->set_state('scrobble');
+				$self->bandcamp_radio_loop($first_page, $num_pages, \%params, $tag);
+			}else{
+				$self->msg(0, "could not connect to '$url'", 'error');
 			}
-			$self->set_state('scrobble');
-			$self->bandcamp_radio_loop($first_page, $num_pages, \%params, $tag);
 		}else{
 			$self->msg(0, "could not read bandcamp tag url '$url'", 'error');
 		}
