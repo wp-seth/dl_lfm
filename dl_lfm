@@ -14,7 +14,7 @@ use Pod::Usage;
 use POSIX qw/strftime/;       # format timestamp
 use Term::ReadKey;            # used for user input
 
-$main::VERSION = '0.7.2';
+$main::VERSION = '0.7.3';
 binmode STDOUT, ":utf8";
 
 # functions
@@ -254,7 +254,7 @@ sub _cleanup_and_exit{
 sub _cleanup_file{
 	my $filename = shift;
 	my $deleted = 0;
-	if(-f $filename && 0 < grep {$filename eq $_} @_clean_up_files){
+	if(defined $filename && -f $filename && 0 < grep {$filename eq $_} @_clean_up_files){
 		unlink $filename;
 		$deleted = 1;
 	}
@@ -348,8 +348,7 @@ sub syntaxCheck{
 		}, $class;
 		$self->init();
 		push @_clean_up_files, $self->{'pause_file'};
-		$self->run();
-		$self;
+		return $self;
 	}
 
 	sub cmd{
@@ -1002,6 +1001,7 @@ sub syntaxCheck{
 					$self->{'mplayer'} = MPlayerWrapper->new({
 							'verbose' => $self->{'verbose'},
 						});
+					$self->{'mplayer'}->run();
 				}
 				$self->set_state('scrobble');
 				$self->bandcamp_radio_loop($first_page, $num_pages, \%params, $tag);
@@ -1991,7 +1991,11 @@ sub syntaxCheck{
 				$self->set_state('skip') unless $self->get_state eq 'no scrobble';
 			}elsif($key eq 'd'){
 				$self->set_state('skip') unless $self->get_state eq 'no scrobble';
-				::_cleanup_file($last_track->{'non_lastfm_file'});
+				if(defined $last_track->{'non_lastfm_file'}){
+					::_cleanup_file($last_track->{'non_lastfm_file'});
+				}else{
+					$self->msg(1, 'nothing to delete; maybe this is just a stream?');
+				}
 			}elsif($key eq 'i'){
 				$self->scrobble_forked($last_track);
 				$self->set_state('skip') unless $self->get_state eq 'no scrobble';
@@ -2166,6 +2170,9 @@ sub syntaxCheck{
 		my $icy_metaint = shift;
 		# out file or stream, e.g. '>test.mp3' or '| vlc -'
 		my $outstream   = $self->{'stream_out'} // '| vlc -'; 
+		$self->{'mplayer'} = MPlayerWrapper->new({
+				'verbose' => $self->{'verbose'},
+			});
 		my $content; 
 		my $byte_count = 0; 
 		my $byte_inc_default = 1024; 
@@ -2542,6 +2549,6 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-originally written by seth
+originally written by seth (see https://github.com/wp-seth/dl_lfm)
 
 =cut
