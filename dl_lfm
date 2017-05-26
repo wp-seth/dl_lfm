@@ -1,9 +1,7 @@
 #!/usr/bin/perl
 # author: seth
 # description: downloads last.fm user data and scrobbles radio streams and 
-#		bandcamp music to last.fm; 
-#
-# tab-size: 2
+#	             bandcamp music to last.fm
 
 use strict;
 use warnings;
@@ -14,7 +12,7 @@ use Pod::Usage;
 use POSIX qw/strftime/;       # format timestamp
 use Term::ReadKey;            # used for user input
 
-$main::VERSION = '0.7.3';
+$main::VERSION = '0.7.4'; # 2017-05-26
 binmode STDOUT, ":utf8";
 
 # functions
@@ -276,6 +274,7 @@ sub syntaxCheck{
 		'scrobble'      => undef, # file or radio station to scrobble (without playing)
 		'timestamp'     => undef, # timestamp in utc for scrobbling
 		'timestamp-local' => undef, # timestamp in local time for scrobbling
+		#'stream-out'    => '| mplayer -cache 8192 -cache-min 5 -', # the destination for streaming data
 		'stream-out'    => '| vlc -', # the destination for streaming data
 		'test'          => undef, # testing only
 		'keep'          => 0,     # keep downloaded tracks (when listending to bandcamp radio)
@@ -2155,7 +2154,7 @@ sub syntaxCheck{
 	sub stream_parse_icy_info{
 		my $self = shift;
 		my $str  = shift;
-		if($str =~ /^StreamTitle='(?:NEXT: ?)?(.*) - (.*)';(?:StreamUrl='|$)/){
+		if($str =~ /^StreamTitle='(?:NEXT: ?)?(.*) - (.*)';(?:StreamUrl='|[\s\x{00}]*$)/){
 			return {
 				'artist' => $1,
 				'track'  => $2,
@@ -2223,6 +2222,8 @@ sub syntaxCheck{
 										if($self->get_state eq 'scrobble'){
 											if(defined $self->{'session_key'}){
 												$self->scrobble_forked(\%last_track);
+											#}else{
+											#	$self->msg(1, 'session key is not defined', 'warning');
 											}
 										}else{
 											# if state was 'skip', then don't scrobble, but reset state 
@@ -2236,6 +2237,8 @@ sub syntaxCheck{
 									}
 									if(defined $self->{'session_key'}){
 										$self->scrobble_forked($current_track, 'now playing');
+									#}else{
+									#	$self->msg(1, 'session key is not defined', 'warning');
 									}
 								}else{
 									# if current track can't be extracted, then print complete info
@@ -2250,6 +2253,8 @@ sub syntaxCheck{
 				}elsif($byte_count + $byte_inc > $icy_metaint){
 					$byte_inc = $icy_metaint - $byte_count;
 				}
+			#}else{
+			#	$self->msg(1, 'icy_metaint not defined', 'warning');
 			}
 		}
 		ReadMode('restore') if defined &ReadMode;
@@ -2380,8 +2385,8 @@ meta:
   -h, --help                  display brief help
       --man                   display long help (man page)
   -q, --silent                same as --verbose=0
-  -v, --verbose               same as --verbose=1 (default)
-  -vv,--very-verbose          same as --verbose=2
+  -v, --verbose               same as --verbose=2
+  -vv,--very-verbose          same as --verbose=3
   -v, --verbose=x             grade of verbosity
                                x=0: no output
                                x=1: default output
