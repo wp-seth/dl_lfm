@@ -12,7 +12,7 @@ use Pod::Usage;
 use POSIX qw/strftime/;       # format timestamp
 use Term::ReadKey;            # used for user input
 
-$main::VERSION = '0.7.4'; # 2017-05-26
+$main::VERSION = '0.7.5'; # 2018-03-04
 binmode STDOUT, ":utf8";
 
 # functions
@@ -1595,6 +1595,8 @@ sub syntaxCheck{
 			# extract event tables
 			$content =~ s/^.*<section id="events-section">(.+?)<\/section>.*$/$1/;
 			$content =~ s/&amp;/&/g;
+			# delete spam
+			$content =~ s/<tr\sclass="events-list-mobile-ad">.*?<\/trc?>\s*//gs;
 			# collect table heads and rows
 			my @parts = $content =~ /
 				<table\s+class="events-list">\s*
@@ -1609,6 +1611,7 @@ sub syntaxCheck{
 			for my $part(@parts){
 				if(substr($part, 1, 2) eq 'th'){
 					$self->msg(4, 'found table head');
+					# e.g. <th>Date</th>, <th>Venue</th>, ...
 					@table_head = $part =~ /<th>\s*(.*\S)\s*<\/th>/g;
 				}elsif(substr($part, 1, 2) eq 'td'){
 					$self->msg(4, 'found table row');
@@ -1648,6 +1651,14 @@ sub syntaxCheck{
 										$event->{$table_head[$i]}{$1} = $2;
 									}
 								}
+							}elsif($table_row[$i] =~ /^\s*
+								<a\shref="([^"]+\/attendance)"\sclass="[^"]+">
+									([0-9]+)\swent
+								<\/a>\s*
+							$/xs){
+								$self->msg(4, 'got attendees');
+								$event->{$table_head[$i]}{'url'} = $website . $1;
+								$event->{$table_head[$i]}{'number'} = $2;
 							}elsif($table_row[$i] =~ /^\s*$/xs){
 								# attendees are not interesting
 							}else{
@@ -1658,6 +1669,8 @@ sub syntaxCheck{
 						push @$events, $event;
 					}else{
 						$self->msg(0, 'could not read page', 'error');
+						$self->msg(3, Dumper(\@table_row));
+						$self->msg(3, Dumper(\@table_head));
 					}
 				}else{
 					$self->msg(0, 'could not read page', 'error');
